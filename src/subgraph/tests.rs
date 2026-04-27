@@ -3,6 +3,8 @@ use super::*;
 use crate::GBZBase;
 use crate::{formats, internal, utils};
 
+use gbz::algorithms::find_chains;
+
 use pggname::graph::GraphInt;
 use pggname::algorithms;
 
@@ -10,6 +12,7 @@ use simple_sds::serialize;
 
 use rand::Rng;
 
+use std::path::PathBuf;
 use std::fs;
 use std::vec;
 
@@ -340,7 +343,7 @@ fn align_with_prefix_with_suffix() {
 
 //-----------------------------------------------------------------------------
 
-// TODO: We should also have a graph with reference paths for testing.
+// TODO: test-graph.gbz has reference paths. We should also test with it.
 // TODO: We should also have a graph with fragmented reference paths for testing.
 // TODO: We should also have a graph with longer nodes for testing.
 
@@ -911,7 +914,6 @@ fn manual_db_queries() {
     fs::remove_file(&db_file).unwrap();
 }
 
-
 #[test]
 fn duplicate_gbz_queries() {
     let (graph, path_index) = internal::load_gbz_and_create_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
@@ -1004,6 +1006,145 @@ fn between_nodes_with_limit() {
         }
     }
 }
+
+//-----------------------------------------------------------------------------
+
+// Tests for snarl extraction with a different graph that contains many degenerate cases.
+
+// Returns (graph, chains, GBZ-base).
+// GBZ-base file must be deleted by the caller.
+fn gbz_base_test_graph() -> (GBZ, Chains, PathBuf) {
+    let gbz_file = utils::get_test_data("test-graph.gbz");
+    let graph = serialize::load_from(&gbz_file);
+    assert!(graph.is_ok(), "Failed to load GBZ: {}", graph.unwrap_err());
+    let graph: GBZ = graph.unwrap();
+    let chains = find_chains(&graph);
+
+    let db_file = serialize::temp_file_name("test-graph-db");
+    let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
+    assert!(result.is_ok(), "Failed to create GBZBase: {}", result.unwrap_err());
+
+    (graph, chains, db_file)
+}
+
+fn snarls_test_case(gbz_graph: &GBZ, chains: &Chains, db_graph: &mut GraphInterface, nodes: &BTreeSet<usize>, truth: &[usize], snarl_output: SnarlOutput, test_case: &str) {
+    let mut gbz_subgraph = Subgraph::new();
+    let gbz_result = gbz_subgraph.around_nodes(GraphReference::Gbz(gbz_graph), nodes, 0);
+    assert!(gbz_result.is_ok(), "GBZ query {} failed to add nodes: {}", test_case, gbz_result.unwrap_err());
+    let gbz_result = gbz_subgraph.extract_snarls(GraphReference::Gbz(gbz_graph), snarl_output, Some(chains));
+    assert!(gbz_result.is_ok(), "GBZ query {} failed to extract snarls: {}", test_case, gbz_result.unwrap_err());
+    let gbz_nodes: Vec<usize> = gbz_subgraph.node_iter().collect();
+    assert_eq!(gbz_nodes, truth, "GBZ query {} returned wrong nodes", test_case);
+
+    let db_test_case = format!("DB {}", test_case);
+    let mut db_subgraph = Subgraph::new();
+    let db_result = db_subgraph.around_nodes(GraphReference::Db(db_graph), nodes, 0);
+    assert!(db_result.is_ok(), "DB query {} failed to add nodes: {}", db_test_case, db_result.unwrap_err());
+    let db_result = db_subgraph.extract_snarls(GraphReference::Db(db_graph), snarl_output, None);
+    assert!(db_result.is_ok(), "DB query {} failed to extract snarls: {}", db_test_case, db_result.unwrap_err());
+    let db_nodes: Vec<usize> = db_subgraph.node_iter().collect();
+    assert_eq!(db_nodes, truth, "DB query {} returned wrong nodes", db_test_case);
+}
+
+#[test]
+fn snarls_unary_paths() {
+    let (gbz_graph, chains, db_file) = gbz_base_test_graph();
+    let mut database = GBZBase::open(&db_file).unwrap();
+    let mut db_graph = GraphInterface::new(&mut database).unwrap();
+
+    let unary_paths = vec![
+        ("A:1", vec![1]),
+        ("A:7-9", vec![7, 8, 9]),
+        ("A:12", vec![12]),
+        ("B:13-14", vec![13, 14]),
+        ("B:18-19", vec![18, 19]),
+        ("B:22-23", vec![22, 23]),
+        ("B:25", vec![25]),
+    ];
+
+    for (path, nodes) in unary_paths {
+        let first = *nodes.first().unwrap();
+        let last = *nodes.last().unwrap();
+        for snarl_output in [SnarlOutput::Contained, SnarlOutput::Overlapping] {
+            let queries = vec![
+                ("first", vec![first], vec![first]),
+                ("last", vec![last], vec![last]),
+                ("ends", vec![first, last], nodes.clone()),
+            ];
+            for (name, nodes, truth) in queries {
+                let test_case = format!("({}, {} snarls, {})", path, snarl_output, name);
+                let nodes: BTreeSet<usize> = nodes.into_iter().collect();
+                snarls_test_case(&gbz_graph, &chains, &mut db_graph, &nodes, &truth, snarl_output, &test_case);
+            }
+        }
+    }
+
+    drop(db_graph);
+    drop(database);
+    fs::remove_file(&db_file).unwrap();
+}
+
+#[test]
+fn snarls_snarls() {
+    let (gbz_graph, chains, db_file) = gbz_base_test_graph();
+    let mut database = GBZBase::open(&db_file).unwrap();
+    let mut db_graph = GraphInterface::new(&mut database).unwrap();
+
+    // (snarl, left boundary, right boundary, left neighbors, right neighbors, internal nodes)
+    let snarls = vec![
+        ("A:1-7", 1, 7, vec![2, 3], vec![2, 6], vec![2, 3, 4, 5, 6]),
+        ("A:9-12", 9, 12, vec![10, 11], vec![10, 11], vec![10, 11]),
+        ("B:14-18", 14, 18, vec![15, 17], vec![16, 17], vec![15, 16, 17]),
+        ("B:19-22", 19, 22, vec![20], vec![20, 21], vec![20, 21]),
+        ("B:23-25", 23, 25, vec![24], vec![24], vec![24]),
+    ];
+
+    for (snarl, left, right, left_neighbors, right_neighbors, internal) in snarls {
+        let mut all_nodes = Vec::new();
+        all_nodes.push(left);
+        all_nodes.extend(internal.iter().copied());
+        all_nodes.push(right);
+
+        // With boundary nodes only, the result does not depend on the snarl output option.
+        for snarl_output in [SnarlOutput::Contained, SnarlOutput::Overlapping] {
+            let queries = vec![
+                (format!("({}, {} snarls, left)", snarl, snarl_output), vec![left], vec![left]),
+                (format!("({}, {} snarls, right)", snarl, snarl_output), vec![right], vec![right]),
+                (format!("({}, {} snarls, ends)", snarl, snarl_output), vec![left, right], all_nodes.clone()),
+            ];
+            for (test_case, nodes, truth) in queries {
+                let nodes: BTreeSet<usize> = nodes.into_iter().collect();
+                snarls_test_case(&gbz_graph, &chains, &mut db_graph, &nodes, &truth, snarl_output, &test_case);
+            }
+        }
+
+        // Boundary node + a neighbor or an internal node.
+        // Results depend on the snarl output option.
+        let mut queries = Vec::new();
+        for neighbor in left_neighbors {
+            queries.push((format!("({}, {})", left, neighbor), vec![left, neighbor]));
+        }
+        for neighbor in right_neighbors {
+            queries.push((format!("({}, {})", neighbor, right), vec![neighbor, right]));
+        }
+        for node in internal.iter().copied() {
+            queries.push((format!("({})", node), vec![node]));
+        }
+        for (name, seeds) in queries {
+            let nodes: BTreeSet<usize> = seeds.iter().copied().collect();
+            let contained_test_case = format!("({}, {} snarls, {})", snarl, SnarlOutput::Contained, name);
+            snarls_test_case(&gbz_graph, &chains, &mut db_graph, &nodes, &seeds, SnarlOutput::Contained, &contained_test_case);
+            let overlapping_test_case = format!("({}, {} snarls, {})", snarl, SnarlOutput::Overlapping, name);
+            snarls_test_case(&gbz_graph, &chains, &mut db_graph, &nodes, &all_nodes, SnarlOutput::Overlapping, &overlapping_test_case);
+        }
+    }
+
+    drop(db_graph);
+    drop(database);
+    fs::remove_file(&db_file).unwrap();
+}
+
+// FIXME: multi-snarl queries
 
 //-----------------------------------------------------------------------------
 
