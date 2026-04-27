@@ -470,7 +470,6 @@ fn check_graph_name(subgraph: &Subgraph, should_have_name: bool, parent: &GraphN
 //-----------------------------------------------------------------------------
 
 // TODO: Add a multi-node query.
-// FIXME: We need a graph with a unary path for a special case of SnarlOutput::Overlapping.
 // For each query, returns (true nodes, path count).
 fn queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, usize)>) {
     let path_a = FullPathName::generic("A");
@@ -1085,7 +1084,7 @@ fn snarls_unary_paths() {
 }
 
 #[test]
-fn snarls_snarls() {
+fn snarls_single() {
     let (gbz_graph, chains, db_file) = gbz_base_test_graph();
     let mut database = GBZBase::open(&db_file).unwrap();
     let mut db_graph = GraphInterface::new(&mut database).unwrap();
@@ -1144,7 +1143,42 @@ fn snarls_snarls() {
     fs::remove_file(&db_file).unwrap();
 }
 
-// FIXME: multi-snarl queries
+#[test]
+fn snarls_multiple() {
+    let (gbz_graph, chains, db_file) = gbz_base_test_graph();
+    let mut database = GBZBase::open(&db_file).unwrap();
+    let mut db_graph = GraphInterface::new(&mut database).unwrap();
+
+    // "to" ends at the first internal node of the latter snarl.
+    // "from" starts at the last internal node of the former snarl.
+    // (query, seed nodes, contained snarls, overlapping snarls)
+    let queries = vec![
+        ("A: to second", vec![1, 2, 7, 8, 9, 10], 1..=7, 1..=12),
+        ("A: from first", vec![2, 7, 8, 9, 10, 12], 9..=12, 1..=12),
+        ("B: to second", vec![14, 15, 16, 18, 19, 20], 14..=18, 14..=22),
+        ("B: from first", vec![16, 18, 19, 20, 22], 19..=22, 14..=22),
+        ("B: to third", vec![19, 20, 22, 23, 24], 19..=22, 19..=25),
+        ("B: from second", vec![20, 22, 23, 24, 25], 23..=25, 19..=25),
+    ];
+
+    for (name, nodes, contained_range, overlapping_range) in queries {
+        let nodes: BTreeSet<usize> = nodes.into_iter().collect();
+
+        let contained_test_case = format!("({}, {} snarls)", name, SnarlOutput::Contained);
+        let mut contained_truth = nodes.clone();
+        contained_truth.extend(contained_range);
+        let contained_truth: Vec<usize> = contained_truth.into_iter().collect();
+        snarls_test_case(&gbz_graph, &chains, &mut db_graph, &nodes, &contained_truth, SnarlOutput::Contained, &contained_test_case);
+
+        let overlapping_test_case = format!("({}, {} snarls)", name, SnarlOutput::Overlapping);
+        let overlapping_truth: Vec<usize> = overlapping_range.collect();
+        snarls_test_case(&gbz_graph, &chains, &mut db_graph, &nodes, &overlapping_truth, SnarlOutput::Overlapping, &overlapping_test_case);
+    }
+
+    drop(db_graph);
+    drop(database);
+    fs::remove_file(&db_file).unwrap();
+}
 
 //-----------------------------------------------------------------------------
 
