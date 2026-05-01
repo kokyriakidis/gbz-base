@@ -47,6 +47,8 @@ use zstd::stream::Decoder as ZstdDecoder;
 use gbz::{GBWT, Orientation, Pos, ENDMARKER};
 use gbz::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
 
+use htscodecs_wrapper::RANSFlags;
+
 #[cfg(test)]
 mod tests;
 
@@ -358,6 +360,10 @@ impl Alignment {
                 TypedField::String([b'b', b'q'], value) => {
                     if !base_quality.is_empty() {
                         return Err(String::from("Multiple base quality fields"));
+                    }
+                    if value.len() != seq_len {
+                        let msg = format!("Quality string length {} does not match query sequence length {}", value.len(), seq_len);
+                        return Err(msg);
                     }
                     base_quality = value;
                 },
@@ -1225,7 +1231,7 @@ pub struct Flags {
 
 impl Flags {
     /// Number of flags per alignment.
-    pub const NUM_FLAGS: usize = 6;
+    pub const NUM_FLAGS: usize = 7;
 
     // Flags expressed as a bit offset.
     // TODO: As enum?
@@ -1251,6 +1257,9 @@ impl Flags {
     ///
     /// We do not encode the difference string, matches, or edits.
     pub const FLAG_EXACT_ALIGNMENT: usize = 5;
+
+    /// Flag: This alignment as a base quality string.
+    pub const FLAG_HAS_BASE_QUALITY: usize = 6;
 
     /// Creates a new flags object with the given number of alignments.
     /// The flags are initialized to zero (false).
@@ -1457,6 +1466,12 @@ impl AlignmentBlock {
         encoder.finish().map_err(|err| format!("Zstd compression error: {}", err))
     }
 
+    fn rans_compress(data: &[u8]) -> Result<Vec<u8>, String> {
+        // FIXME: Where do we get the parameters?
+        let flags = RANSFlags::first_order().with_rle();
+        htscodecs_wrapper::rans_compress(data, flags)
+    }
+
     fn compress_names_pairs(alignments: &[Alignment]) -> Result<Vec<u8>, String> {
         let mut names: Vec<u8> = Vec::new();
         for aln in alignments.iter() {
@@ -1475,17 +1490,15 @@ impl AlignmentBlock {
     fn compress_quality_strings(alignments: &[Alignment]) -> Result<Vec<u8>, String> {
         let mut quality_strings: Vec<u8> = Vec::new();
         for aln in alignments.iter() {
-            // Quality strings as 0-terminated strings.
-            if !aln.base_quality.is_empty() {
-                quality_strings.extend_from_slice(&aln.base_quality);
-            }
-            quality_strings.push(0);
+            // Concantenated quality strings.
+            // We know the presence from flags and length from query sequence length.
+            quality_strings.extend_from_slice(&aln.base_quality);
         }
-        if quality_strings.len() <= alignments.len() {
+        if quality_strings.is_empty() {
             // If we have no quality strings, we can store an empty blob.
             return Ok(Vec::new());
         }
-        Self::zstd_compress(&quality_strings)
+        Self::rans_compress(&quality_strings)
     }
 
     // TODO: Instead of TAG:TYPE:VALUE, we could drop the separators.
@@ -1562,6 +1575,7 @@ impl AlignmentBlock {
             }
             flags.set(i, Flags::FLAG_FULL_ALIGNMENT, full_alignment);
             flags.set(i, Flags::FLAG_EXACT_ALIGNMENT, exact_alignment);
+            flags.set(i, Flags::FLAG_HAS_BASE_QUALITY, !aln.base_quality.is_empty());
 
             aln.encode_numbers_into(&mut numbers, read_length.is_some());
         }
@@ -1645,14 +1659,31 @@ impl AlignmentBlock {
             return Ok(());
         }
 
-        let buffer = Self::zstd_decompress(&self.quality_strings[..])?;
-        let mut iter = buffer.split(|&c| c == 0);
+        // If we know the total length in advance, we can avoid overallocation and an extra copy.
+        let expected_total_length: usize = result.iter().enumerate().map(|(i, aln)| {
+            if self.flags.get(i, Flags::FLAG_HAS_BASE_QUALITY) {
+                aln.seq_len
+            } else {
+                0
+            }
+        }).sum();
+
+        let buffer = htscodecs_wrapper::rans_decompress(&self.quality_strings[..], Some(expected_total_length))?;
+        let mut buffer_offset = 0;
         for (i, aln) in result.iter_mut().enumerate() {
-            let quality = iter.next().ok_or_else(|| format!("Missing quality string for alignment {}", i))?;
-            aln.base_quality = quality.to_vec();
+            if self.flags.get(i, Flags::FLAG_HAS_BASE_QUALITY) {
+                let read_len = aln.seq_len;
+                let quality = buffer.get(buffer_offset..buffer_offset + read_len).ok_or_else(
+                    || format!("Missing quality string for alignment {}", i)
+                )?;
+                aln.base_quality = quality.to_vec();
+                buffer_offset += read_len;
+            }
         }
-        // There should be an empty slice at the end, as the buffer is 0-terminated.
-        // TODO: Should we check this?
+        if buffer_offset != buffer.len() {
+            return Err(format!("Extra data in quality strings blob: expected offset {}, got {}", buffer_offset, buffer.len()));
+        }
+
         Ok(())
     }
 
@@ -1780,15 +1811,15 @@ impl AlignmentBlock {
         // Missing query / pair names are encoded as empty strings.
         self.decompress_names_pairs(&mut result)?;
 
-        // This could be an empty blob if we have no quality strings.
-        self.decompress_quality_strings(&mut result)?;
-
         // The encoding includes empty / missing difference strings but no difference strings
         // for exact alignments.
         self.decompress_difference_strings(&mut result)?;
 
         // We need the flags and the difference strings (for non-exact alignments) to decode the numbers.
         self.decompress_numbers(&mut result)?;
+
+        // We need numbers (query sequence length) and flags to decode the quality strings.
+        self.decompress_quality_strings(&mut result)?;
 
         // This could be an empty blob if we have no optional fields.
         self.decompress_optional_fields(&mut result)?;
