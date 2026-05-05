@@ -2,6 +2,10 @@
 
 ## Current version
 
+* Database versions: GBZ-base v0.4.0, GAF-base version 4
+* GAF-base version 3:
+  * Quality strings are compressed with rANS 4x16 (order-1, rle).
+  * GAF-base is now substantially smaller than bgzip-compressed sorted GAF.
 * Improved snarl-aware queries:
   * `SnarlOutput::Contained`: Extend the subgraph with snarls that have both boundary nodes in the subgraph (existing behavior).
   * `SnarlOutput::Overlapping`: Extend the subgraph with all overlapping snarls (requires a connected subgraph).
