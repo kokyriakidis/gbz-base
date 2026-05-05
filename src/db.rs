@@ -81,7 +81,7 @@ impl GBZBase {
     const KEY_VERSION: &'static str = "version";
 
     /// Current database version.
-    pub const VERSION: &'static str = "GBZ-base v0.4.0";
+    pub const VERSION: &'static str = "GBZ-base version 4";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
@@ -533,7 +533,7 @@ impl GAFBase {
     const KEY_VERSION: &'static str = "version";
 
     /// Current database version.
-    pub const VERSION: &'static str = "GAF-base version 4-dev";
+    pub const VERSION: &'static str = "GAF-base version 4";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";

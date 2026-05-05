@@ -1,9 +1,11 @@
 # GBZ-base releases
 
-## Current version
+## GBZ-base 0.5.0 (2026-05-05)
 
-* Database versions: GBZ-base v0.4.0, GAF-base version 4
-* GAF-base version 3:
+* Database versions: GBZ-base version 4, GAF-base version 4
+* GBZ-base version 4:
+  * Same as version 0.4.0, but with the new version number scheme.
+* GAF-base version 4:
   * Quality strings are compressed with rANS 4x16 (order-1, rle).
   * GAF-base is now substantially smaller than bgzip-compressed sorted GAF.
 * Improved snarl-aware queries:

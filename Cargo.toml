@@ -1,6 +1,6 @@
 [package]
 name = "gbz-base"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "Pangenome file formats based on SQLite"
 license = "MIT"
@@ -13,10 +13,10 @@ gbz = { version = "0.6.1" }
 #gbz = { git = "https://github.com/jltsiren/gbwt-rs.git", branch = "main" }
 simple-sds = { version = "0.4.1" }
 #simple-sds = { git = "https://github.com/jltsiren/simple-sds.git", branch = "main" }
-pggname = { version = "0.2.1" }
+pggname = { version = "0.2.2" }
 #pggname = { git = "https://github.com/jltsiren/pggname.git", branch = "main" }
-#htscodecs-wrapper = { version "0.1.0" }
-htscodecs-wrapper = { git = "https://github.com/jltsiren/htscodecs-wrapper.git", branch = "main" }
+htscodecs-wrapper = { version = "0.1.0" }
+#htscodecs-wrapper = { git = "https://github.com/jltsiren/htscodecs-wrapper.git", branch = "main" }
 
 # Use fallible_uint for getting usize values from query results.
 rusqlite = { version = "0.38", features = ["bundled", "fallible_uint"] }
