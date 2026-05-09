@@ -50,8 +50,10 @@ By default, the `gbz2db` tries to find them using a simple algorithm that works 
 It requires that each graph component contains exactly two tips with a directed path between them.
 
 If the assumptions fail, the algorithm will not be able to find top-level chains for some components.
+It will then print a warning message.
 In such cases, prebuilt chains can be used with option `--chains graph.chains`.
 [vg](https://github.com/vgteam/vg) version 1.69.0 or newer can extract a chains file from a distance index or a snarls file.
+A top-level distance index (built with `vg index` option `--no-nested-distance`) is sufficient for this purpose.
 
 Example with chains extracted from a distance index:
 
