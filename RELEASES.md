@@ -3,6 +3,7 @@
 ## Current version
 
 * GBZ-base construction prints a warning if it cannot find top-level chains for all graph components.
+* Tool for benchmarking GBZ-base and GAF-base queries.
 
 ## GBZ-base 0.5.0 (2026-05-05)
 
@@ -62,10 +63,10 @@ This is the initial release of GBZ-base and GAF-base.
 * Update version in `Cargo.toml`.
 * Switch to crates.io versions of dependencies, if necessary.
 * Update `RELEASES.md`.
-* Run `cargo clippy`.
+* Run `cargo clippy --features=benchmark`.
 * Run tests with `cargo test`.
 * Build documentation with `cargo doc`.
-* Build the optimized version with `cargo build --release`.
+* Build the optimized version with `cargo build --release --features=benchmark`.
 * Commit the final changes for the release.
 * Publish in crates.io with `cargo publish`.
 * Push to GitHub.

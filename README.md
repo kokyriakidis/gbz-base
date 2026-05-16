@@ -143,7 +143,7 @@ All other paths will be listed as unknown haplotypes.
 * `--cigar`: Output CIGAR strings relative to the query path as `CG:Z` tags.
 * `--format json`: Extract the subgraph in JSON format instead of GFA.
 
-### Snarl-based queries
+### Extracting a sequence of snarls
 
 Queries based on paths and nodes find the query position and then extract a greedy context around it.
 This does not always result in a meaningful subgraph.
@@ -166,6 +166,8 @@ To avoid extracting most of the chromosome, a safety limit for the number of nod
 The limit can be specified using suffixes such as `k` or `M`.
 If the limit is exceeded, the query will fail.
 
+### Extracting snarls covered by a query
+
 Other queries can also be made snarl-aware:
 
 ```sh
@@ -176,6 +178,8 @@ After extracting a subgraph, the query determines all top-level snarls that are 
 A top-level snarl is contained in a subgraph if both of its boundary nodes are in the subgraph.
 These snarls are based on the top-level chains provided or computed during GBZ-base construction.
 
+### Extracting snarls overlapping with a query
+
 We can also extend the subgraph with all overlapping snarls:
 
 ```sh
@@ -185,8 +189,10 @@ query --contig chrM --interval 3000..4000 --extend-snarls graph.db > out.gfa
 In this case, we also include partially overlapping snarls.
 A snarl is partially overlapping with a subgraph if a boundary node and one of its successors in the snarl are in the subgraph.
 If there are no chain links in the subgraph, the query instead tries to find a snarl that contains the entire subgraph.
+
 Option `--extend-snarls` requires that the subgraph is weakly connected.
 It does not work with node-based queries with multiple nodes.
+If the graph contains large snarls, the extended subgraph can be much larger than the original one.
 
 ### Extracting alignments
 
