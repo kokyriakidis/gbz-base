@@ -174,9 +174,15 @@ Other queries can also be made snarl-aware:
 query --contig chrM --interval 3000..4000 --snarls graph.db > out.gfa
 ```
 
-After extracting a subgraph, the query determines all top-level snarls that are contained in the extracted subgraph.
+After extracting a subgraph, the query extends it to cover all top-level snarls contained in the subgraph.
 A top-level snarl is contained in a subgraph if both of its boundary nodes are in the subgraph.
 These snarls are based on the top-level chains provided or computed during GBZ-base construction.
+
+The extended subgraph can be much larger than the original one, if:
+
+* The subgraph is not a single component.
+* The reference sample contains a large deletion in the subgraph.
+* Context length (`--context`) is non-zero and there is a large deletion in any sample within the context.
 
 ### Extracting snarls overlapping with a query
 

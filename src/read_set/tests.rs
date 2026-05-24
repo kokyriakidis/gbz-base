@@ -103,6 +103,7 @@ fn read_set_default() {
     assert_eq!(read_set.len(), 0, "Default ReadSet has non-zero length");
     assert_eq!(read_set.unclipped(), 0, "Default ReadSet has non-zero unclipped count");
     assert_eq!(read_set.blocks(), 0, "Default ReadSet has non-zero block count");
+    assert_eq!(read_set.candidates(), 0, "Default ReadSet has non-zero candidate count");
     assert_eq!(read_set.clusters(), 0, "Default ReadSet has non-zero cluster count");
     assert!(read_set.iter().next().is_none(), "Default ReadSet iterator is not empty");
 }
@@ -281,6 +282,7 @@ fn read_set_from_rows() {
             let read_set = read_set.unwrap();
 
             assert_eq!(read_set.len(), read_set.unclipped(), "Extracted clipped alignments from rows {}..{}", range.start, range.end);
+            assert_eq!(read_set.candidates(), read_set.len(), "Did not extract all candidates from rows {}..{}", range.start, range.end);
             assert!(found_alns + read_set.len() <= all_reads.len(), "Extracted too many alignments from rows {}..{}", range.start, range.end);
             for (i, aln) in read_set.iter().enumerate() {
                 let truth = &all_reads[found_alns + i];
@@ -292,7 +294,7 @@ fn read_set_from_rows() {
             rowid += chunk_size;
         }
         assert_eq!(found_alns, gaf_base.alignments(), "Wrong total number of alignments with chunk size {}", chunk_size);
-        assert_eq!(found_blocks, gaf_base.blocks(), "Wrong total number of extracted with chunk size {}", chunk_size);
+        assert_eq!(found_blocks, gaf_base.blocks(), "Wrong total number of extracted blocks with chunk size {}", chunk_size);
     }
 
     // Cleanup.

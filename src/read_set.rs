@@ -105,7 +105,10 @@ pub struct ReadSet {
     reads: Vec<Alignment>,
     // Number of alignments before clipping.
     unclipped: usize,
+    // Number of alignment blocks decompressed.
     blocks: usize,
+    // Number of candidate alignments in the decompressed blocks.
+    candidates: usize,
     // Number of node id clusters in the subgraph.
     clusters: usize,
 }
@@ -311,6 +314,7 @@ impl ReadSet {
                 }
                 row_ids.insert(row_id);
                 let block = Self::decompress_block(row, 1)?;
+                let block_size = block.len();
                 for mut alignment in block {
                     read_set.set_target_path(&mut alignment, subgraph, &mut get_record, output == AlignmentOutput::Contained)?;
                     if alignment.has_target_path() {
@@ -330,6 +334,7 @@ impl ReadSet {
                     }
                 }
                 read_set.blocks += 1;
+                read_set.candidates += block_size;
             }
         }
 
@@ -403,6 +408,7 @@ impl ReadSet {
         let mut rows = get_reads.query((row_range.start, row_range.end)).map_err(|x| x.to_string())?;
         while let Some(row) = rows.next().map_err(|x| x.to_string())? {
             let block = Self::decompress_block(row, 0)?;
+            let block_size = block.len();
             for mut alignment in block {
                 read_set.set_target_path_simple(&mut alignment, &mut get_record)?;
                 if alignment.has_target_path() {
@@ -411,6 +417,7 @@ impl ReadSet {
                 }
             }
             read_set.blocks += 1;
+            read_set.candidates += block_size;
         }
 
         Ok(read_set)
@@ -438,6 +445,12 @@ impl ReadSet {
     #[inline]
     pub fn blocks(&self) -> usize {
         self.blocks
+    }
+
+    /// Returns the number of candidate alignments in the decompressed blocks.
+    #[inline]
+    pub fn candidates(&self) -> usize {
+        self.candidates
     }
 
     /// Returns the number of node records in the read set.

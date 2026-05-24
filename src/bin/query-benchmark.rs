@@ -7,13 +7,13 @@ use gbz::FullPathName;
 
 use simple_sds::binaries;
 
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::time::Instant;
 use std::{env, process};
 
 use getopts::Options;
 
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 
 //-----------------------------------------------------------------------------
 
@@ -46,15 +46,19 @@ fn main() -> Result<(), String> {
             let read_set = ReadSet::new(graph_ref, &subgraph, gaf_base, AlignmentOutput::Clipped)?;
             result.fragments = read_set.len();
             result.alignments = read_set.unclipped();
-            result.alignment_blocks = read_set.blocks();
+            result.blocks = read_set.blocks();
+            result.candidates = read_set.candidates();
             result.handles = read_set.node_records();
         }
 
         let query_end = Instant::now();
         result.time = query_end.duration_since(query_start).as_secs_f64();
+        if config.verbose {
+            result.print(query);
+        }
         results.push(result);
     }
-    report_results(&queries, &results, &config)?;
+    report_results(&queries, &results, &config);
 
     let end_time = Instant::now();
     let seconds = end_time.duration_since(start_time).as_secs_f64();
@@ -78,9 +82,10 @@ struct Config {
     num_queries: usize,
     context_length: usize,
     snarl_output: SnarlOutput,
+    seed: u64,
 
     // Output options.
-    report_file: Option<String>,
+    verbose: bool,
 }
 
 impl Default for Config {
@@ -94,7 +99,8 @@ impl Default for Config {
             num_queries: Self::DEFAULT_NUM_QUERIES,
             context_length: Self::DEFAULT_CONTEXT_LENGTH,
             snarl_output: Self::DEFAULT_SNARL_OUTPUT,
-            report_file: None,
+            seed: Self::DEFAULT_SEED,
+            verbose: false,
         }
     }
 }
@@ -104,6 +110,7 @@ impl Config {
     const DEFAULT_NUM_QUERIES: usize = 10000;
     const DEFAULT_CONTEXT_LENGTH: usize = 100;
     const DEFAULT_SNARL_OUTPUT: SnarlOutput = SnarlOutput::None;
+    const DEFAULT_SEED: u64 = 42;
 
     fn new() -> Result<Self, String> {
         let mut config = Config::default();
@@ -122,7 +129,8 @@ impl Config {
         opts.optopt("", "num-queries", &format!("number of queries to run (default: {})", Self::DEFAULT_NUM_QUERIES), "INT");
         opts.optopt("", "greedy-context", &format!("extract context (in bp) around the query interval (default: {})", Self::DEFAULT_CONTEXT_LENGTH), "INT");
         opts.optflag("", "snarls", "extract top-level snarls contained in the query interval");
-        opts.optopt("", "report-file", "file to write detailed results to (optional)", "FILE");
+        opts.optopt("", "seed", &format!("random seed for query generation (default: {})", Self::DEFAULT_SEED), "INT");
+        opts.optflag("", "verbose", "print query-level statistics to stdout");
         let matches = match opts.parse(&args[1..]) {
             Ok(m) => m,
             Err(f) => {
@@ -156,7 +164,16 @@ impl Config {
         // We do not support --extend-snarls, as the size of the output subgraph
         // is unpredictable in graphs with large snarls.
 
-        config.report_file = matches.opt_str("report-file");
+        // We want to generate the same queries for different GAF-base / context / snarl options,
+        // but different queries if the interval length or the number of queries changes.
+        // (As currently implemented, changing interval length will change the queries anyway.)
+        if let Some(s) = matches.opt_str("seed") {
+            config.seed = parse_integer(&s, "--seed")? as u64;
+        }
+        config.seed ^= config.interval_length as u64;
+        config.seed ^= config.num_queries as u64;
+
+        config.verbose = matches.opt_present("verbose");
 
         Ok(config)
     }
@@ -219,7 +236,7 @@ fn generate_queries(config: &Config) -> Result<Vec<SubgraphQuery>, String> {
     let total_length = contigs.iter().map(|(_, len)| *len).sum::<usize>();
 
     let mut queries = Vec::new();
-    let mut rng = rand::rng();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(config.seed);
     for _ in 0..config.num_queries {
         let mut offset = rng.random_range(0..total_length);
         let mut contig_index = 0;
@@ -246,12 +263,27 @@ struct QueryResult {
     nodes: usize,
     fragments: usize,
     alignments: usize,
-    alignment_blocks: usize,
+    blocks: usize,
+    candidates: usize,
     handles: usize,
     time: f64,
 }
 
-fn report_results(queries: &[SubgraphQuery], results: &[QueryResult], config: &Config) -> Result<(), String> {
+impl QueryResult {
+    // Prints the result in a tab-delimited format to stdout.
+    fn print(&self, query: &SubgraphQuery) {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}",
+            query, self.nodes,
+            self.fragments, self.alignments,
+            self.blocks, self.candidates,
+            self.handles,
+            self.time
+        );
+    }
+}
+
+fn report_results(queries: &[SubgraphQuery], results: &[QueryResult], config: &Config) {
     let divisor = if results.is_empty() { 1.0 } else { results.len() as f64 };
     eprintln!(
         "{} queries with interval length {} bp, context length {} bp, and snarl output '{}'",
@@ -268,29 +300,16 @@ fn report_results(queries: &[SubgraphQuery], results: &[QueryResult], config: &C
         eprintln!("Fragments: {:.3}", total_fragments / divisor);
         let total_alignments: f64 = results.iter().map(|r| r.alignments as f64).sum();
         eprintln!("Alignments: {:.3}", total_alignments / divisor);
-        let total_alignment_blocks: f64 = results.iter().map(|r| r.alignment_blocks as f64).sum();
-        eprintln!("Alignment blocks: {:.3}", total_alignment_blocks / divisor);
+        let total_blocks: f64 = results.iter().map(|r| r.blocks as f64).sum();
+        eprintln!("Alignment blocks: {:.3}", total_blocks / divisor);
+        let total_candidates: f64 = results.iter().map(|r| r.candidates as f64).sum();
+        eprintln!("Alignment candidates: {:.3}", total_candidates / divisor);
         let total_handles: f64 = results.iter().map(|r| r.handles as f64).sum();
         eprintln!("Handles: {:.3}", total_handles / divisor);
     }
     let total_time: f64 = results.iter().map(|r| r.time).sum();
     eprintln!("Query time: {:.6} seconds", total_time / divisor);
     eprintln!();
-
-    if config.report_file.is_none() {
-        return Ok(());
-    }
-    let report_file = config.report_file.as_ref().unwrap();
-
-    let mut file = std::fs::File::create(report_file).map_err(|x| format!("Failed to create report file {}: {}", report_file, x))?;
-    for (query, result) in queries.iter().zip(results.iter()) {
-        writeln!(
-            file, "{}\t{}\t{}\t{}\t{}\t{}\t{:.6}",
-            query, result.nodes, result.fragments, result.alignments, result.alignment_blocks, result.handles, result.time
-        ).map_err(|x| format!("Failed to write to report file {}: {}", report_file, x))?;
-    }
-
-    Ok(())
 }
 
 //-----------------------------------------------------------------------------
