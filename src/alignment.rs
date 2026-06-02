@@ -1467,7 +1467,7 @@ impl AlignmentBlock {
     }
 
     fn rans_compress(data: &[u8]) -> Result<Vec<u8>, String> {
-        // FIXME: Where do we get the parameters?
+        // TODO: Where do we get the parameters?
         let flags = RANSFlags::first_order().with_rle();
         htscodecs_wrapper::rans_compress(data, flags)
     }

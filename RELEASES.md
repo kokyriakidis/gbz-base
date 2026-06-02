@@ -1,9 +1,11 @@
 # GBZ-base releases
 
-## Current version
+## GBZ-base 0.5.1 (2026-06-02)
 
 * GBZ-base construction prints a warning if it cannot find top-level chains for all graph components.
 * Tool for benchmarking GBZ-base and GAF-base queries.
+
+This is a patch version for the paper.
 
 ## GBZ-base 0.5.0 (2026-05-05)
 

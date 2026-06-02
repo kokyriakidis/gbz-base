@@ -1263,11 +1263,9 @@ impl Subgraph {
                     // Both boundary nodes are in the subgraph.
                     result.insert((handle, next));
                 }
-            } else if snarls == SnarlOutput::Overlapping {
-                if self.is_snarl_entry_in_subgraph(record) {
-                    // This is a snarl entry point and the subgraph extends into the snarl.
-                    result.insert((handle, next));
-                }
+            } else if snarls == SnarlOutput::Overlapping && self.is_snarl_entry_in_subgraph(record) {
+                // This is a snarl entry point and the subgraph extends into the snarl.
+                result.insert((handle, next));
             }
         }
 
