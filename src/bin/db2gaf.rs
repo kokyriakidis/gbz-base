@@ -15,6 +15,8 @@ use simple_sds::serialize;
 
 use getopts::Options;
 
+// TODO: Read the Nodes table into GBWT first. That should speed up decompression greatly.
+
 //-----------------------------------------------------------------------------
 
 fn main() -> Result<(), String> {

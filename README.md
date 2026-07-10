@@ -216,6 +216,22 @@ Use option `--alignments overlapping` to avoid clipping or `--alignments contain
 The GBZ-base can be for the graph the reads were aligned to, or for any supergraph.
 For example, a GBZ-base for a clipped (default) Minigraph–Cactus graph can be used with reads aligned to a corresponding frequency-filtered or personalized (haplotype-sampled) graph.
 
+## Test data
+
+Directory `test_data` contains test data.
+In particular, there is a subset of a HPRC release 1 graph also used as the [haplotype sampling test case](https://github.com/vgteam/vg/blob/master/test/haplotype-sampling/README.md) in vg.
+The test graph contains the following regions:
+
+* `GRCh38#chr6:31498145-31511124` (micb)
+* `GRCh38#chr19:54816468-54830778` (kir3dl1)
+
+The relevant files are:
+
+* `micb-kir3dl1.gbz` / `micb-kir3dl1.gfa`: The graph
+* `micb-kir3dl1.chains`: Top-level chains for the graph
+* `micb-kir3dl1_HG003.gaf` / `micb-kir3dl1_HG003.gaf.gz`: HG003 reads aligned to the graph
+* `micb-kir3dl1_HG003.gbwt`: Pre-built GBWT index for the reads
+
 ## Interface
 
 See `cargo doc --open`.
