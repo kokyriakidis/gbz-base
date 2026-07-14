@@ -11,6 +11,9 @@ use getopts::Options;
 //-----------------------------------------------------------------------------
 
 fn main() -> Result<(), String> {
+    eprintln!("This tool has been deprecated. Please use `gaf-base sort` instead.");
+    eprintln!();
+
     let start_time = Instant::now();
 
     let config = Config::new();
