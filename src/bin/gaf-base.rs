@@ -1,0 +1,415 @@
+use std::fs::{self, File};
+use std::io::{self, Write, BufWriter};
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::Instant;
+use std::{process, thread};
+
+use gbz_base::{GBZBase, GraphInterface};
+use gbz_base::{GAFBase, GAFBaseParams, GraphReference};
+use gbz_base::db::FileType;
+use gbz_base::gaf_sort::{sort_gaf, KeyType, SortParameters};
+use gbz_base::{db, formats, utils};
+use gbz_base::ReadSet;
+
+use gbz::GBZ;
+
+use pggname::GraphName;
+
+use simple_sds::{binaries, serialize};
+
+use clap::{Args, Parser, Subcommand, ValueEnum};
+
+//-----------------------------------------------------------------------------
+
+#[derive(Parser)]
+#[command(
+    name = "gaf-base",
+    version,
+    about = "Sequence alignments in SQLite",
+    long_about = None,
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Build a GAF-base from sorted GAF alignments
+    Compress(CompressArgs),
+    /// Convert a GAF-base back to GAF
+    Decompress(DecompressArgs),
+    /// Sort a GAF file for GAF-base construction
+    Sort(SortArgs),
+}
+
+fn main() -> Result<(), String> {
+    let cli = Cli::parse();
+    match cli.command {
+        Commands::Compress(args) => compress(args),
+        Commands::Decompress(args) => decompress(args),
+        Commands::Sort(args) => sort(args),
+    }
+}
+
+// Parses an unsigned integer that may use suffixes such as `k` or `M`.
+fn parse_quantity(s: &str) -> Result<usize, String> {
+    binaries::parse_unsigned(s).map_err(|x| x.to_string())
+}
+
+//-----------------------------------------------------------------------------
+
+#[derive(Args)]
+struct CompressArgs {
+    /// GAF alignment file (may be gzip-compressed)
+    #[arg(value_name = "alignments.gaf[.gz]")]
+    gaf: PathBuf,
+
+    /// GBWT file name
+    #[arg(short, long, value_name = "FILE")]
+    gbwt: Option<PathBuf>,
+
+    /// Build a reference-free GAF-base using this graph
+    #[arg(short = 'r', long = "ref-free", value_name = "FILE")]
+    ref_free: Option<PathBuf>,
+
+    /// Number of alignments per block
+    #[arg(short, long, value_name = "INT", value_parser = parse_quantity, default_value_t = GAFBaseParams::BLOCK_SIZE)]
+    block_size: usize,
+
+    /// Do not store quality strings
+    #[arg(long)]
+    no_quality: bool,
+
+    /// Do not store unsupported optional fields
+    #[arg(long)]
+    no_optional: bool,
+
+    /// Output file name (default: <input>.db)
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+
+    /// Overwrite the database file if it exists
+    #[arg(long)]
+    overwrite: bool,
+}
+
+fn compress(args: CompressArgs) -> Result<(), String> {
+    let start_time = Instant::now();
+
+    let mut params = GAFBaseParams { block_size: args.block_size, ..Default::default() };
+    if args.no_quality {
+        params.store_quality_strings = false;
+    }
+    if args.no_optional {
+        params.store_optional_fields = false;
+    }
+    if args.ref_free.is_some() {
+        params.reference_free = true;
+    }
+
+    let db_file = args.output.unwrap_or_else(|| {
+        let mut name = args.gaf.clone();
+        name.add_extension("db");
+        name
+    });
+
+    // Check if the database already exists.
+    if binaries::file_exists(&db_file) {
+        if args.overwrite {
+            eprintln!("Overwriting database {}", db_file.display());
+            fs::remove_file(&db_file).map_err(|x| x.to_string())?;
+        } else {
+            return Err(format!("Database {} already exists", db_file.display()));
+        }
+    }
+
+    // Create the database.
+    if let Some(graph_file) = &args.ref_free {
+        match db::identify_file(graph_file) {
+            FileType::Gbz => {
+                eprintln!("Loading GBZ graph {}", graph_file.display());
+                let graph: GBZ = serialize::load_from(graph_file).map_err(|x| x.to_string())?;
+                GAFBase::create_from_files(
+                    &args.gaf, args.gbwt.as_deref(), &db_file,
+                    GraphReference::Gbz(&graph), &params
+                )?;
+            },
+            FileType::Version(v) => {
+                if v != GBZBase::VERSION {
+                    let msg = format!("File {} is {}; expected {}", graph_file.display(), v, GBZBase::VERSION);
+                    return Err(msg);
+                }
+                eprintln!("Opening GBZ-base {}", graph_file.display());
+                let database = GBZBase::open(graph_file)?;
+                let mut graph = GraphInterface::new(&database)?;
+                GAFBase::create_from_files(
+                    &args.gaf, args.gbwt.as_deref(), &db_file,
+                    GraphReference::Db(&mut graph), &params
+                )?;
+            },
+            _ => {
+                return Err(format!("File {} is not a valid graph", graph_file.display()));
+            }
+        };
+    } else {
+        GAFBase::create_from_files(&args.gaf, args.gbwt.as_deref(), &db_file, GraphReference::None, &params)?;
+    }
+
+    // Statistics.
+    let database = GAFBase::open(&db_file)?;
+    eprintln!(
+        "The database contains {} nodes and {} alignments in {} blocks",
+        database.nodes(), database.alignments(), database.blocks()
+    );
+    let size = database.file_size().unwrap_or_else(|| String::from("unknown"));
+    eprintln!("Final database size: {}", size);
+
+    let end_time = Instant::now();
+    let seconds = end_time.duration_since(start_time).as_secs_f64();
+    eprintln!("Used {:.3} seconds", seconds);
+    utils::report_peak_memory_usage();
+
+    Ok(())
+}
+
+//-----------------------------------------------------------------------------
+
+// Default number of blocks in a single ReadSet.
+const DEFAULT_CHUNK_SIZE: usize = 100;
+
+#[derive(Args)]
+struct DecompressArgs {
+    /// GAF-base file
+    #[arg(value_name = "gaf_base.db")]
+    gaf_base: PathBuf,
+
+    /// Use this GBZ graph as the reference
+    #[arg(short, long, value_name = "FILE")]
+    reference: Option<PathBuf>,
+
+    /// Chunk size in blocks
+    #[arg(short, long, value_name = "INT", value_parser = parse_quantity, default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
+
+    /// Output file name (default: stdout)
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+}
+
+fn decompress(args: DecompressArgs) -> Result<(), String> {
+    let start_time = Instant::now();
+
+    if args.chunk_size < 1 {
+        return Err("--chunk-size must be positive".to_string());
+    }
+
+    // Inputs.
+    let database = GAFBase::open(&args.gaf_base)?;
+    let graph = if let Some(gbz_file) = &args.reference {
+        Some(serialize::load_from(gbz_file).map_err(|x| x.to_string())?)
+    } else {
+        None
+    };
+
+    // Check that the inputs are compatible.
+    let alignments = database.graph_name()?;
+    if let Some(graph) = &graph {
+        let reference = GraphName::from_gbz(graph);
+        let result = utils::require_valid_reference(&alignments, &reference);
+        if let Err(e) = result {
+            // Print the error manually, as it contains multiple lines.
+            eprint!("Error: {}", e);
+            process::exit(1);
+        }
+    }
+
+    write_gaf(&database, &alignments, graph.as_ref(), args.chunk_size, args.output.as_deref())?;
+
+    let end_time = Instant::now();
+    let seconds = end_time.duration_since(start_time).as_secs_f64();
+    eprintln!("Used {:.3} seconds", seconds);
+    utils::report_peak_memory_usage();
+
+    Ok(())
+}
+
+fn write_gaf(
+    database: &GAFBase,
+    alignments: &GraphName,
+    graph: Option<&GBZ>,
+    chunk_size: usize,
+    output: Option<&std::path::Path>,
+) -> Result<(), String> {
+    // Open the output as either a file or stdout.
+    let writer: Box<dyn Write + Send> = match output {
+        Some(path) if path != std::path::Path::new("-") => {
+            let file = File::create(path).map_err(|x| format!("Failed to create {}: {}", path.display(), x))?;
+            Box::new(file)
+        },
+        _ => Box::new(io::stdout()),
+    };
+
+    // Decoded ReadSets, with an empty ReadSet signaling the end of input.
+    let (to_output, from_decoder) = mpsc::sync_channel(4);
+
+    // Status of the output thread as Result<(), String>.
+    let (to_decoder, from_output) = mpsc::sync_channel(1);
+
+    // Determine header lines first and pass them to the output thread.
+    let header_lines = alignments.to_gaf_header_lines();
+
+    // Output thread.
+    let output_thread = thread::spawn(move || {
+        let mut output = BufWriter::new(writer);
+        let mut status = formats::write_gaf_file_header(&mut output)
+            .map_err(|e| e.to_string());
+        if status.is_ok() {
+            status = formats::write_header_lines(&header_lines, &mut output)
+                .map_err(|e| e.to_string());
+        }
+        while status.is_ok() {
+            let read_set: ReadSet = from_decoder.recv().unwrap_or_else(|_| ReadSet::default());
+            if read_set.is_empty() {
+                break;
+            }
+            status = read_set.to_gaf(&mut output);
+        }
+        if status.is_ok() {
+            status = output.flush().map_err(|e| e.to_string());
+        }
+        let _ = to_decoder.send(status);
+    });
+
+    let mut found_alns = 0;
+    let mut rowid = 1; // SQLite row ids start from 1.
+    let mut status = Ok(());
+    while found_alns < database.alignments() {
+        let range = rowid..(rowid + chunk_size);
+        let read_set = ReadSet::from_rows(database, range.clone(), graph);
+        if let Err(msg) = &read_set {
+            status = Err(msg.clone());
+            let _ = to_output.send(ReadSet::default()); // Signal end of input.
+            break;
+        }
+        let read_set = read_set.unwrap();
+        if read_set.is_empty() {
+            status = Err(format!("No reads found in rows {}..{}", range.start, range.end));
+            let _ = to_output.send(ReadSet::default()); // Signal end of input.
+            break;
+        }
+        found_alns += read_set.len();
+        let _ = to_output.send(read_set);
+        rowid += chunk_size;
+    }
+    if status.is_ok() {
+        let _ = to_output.send(ReadSet::default()); // Signal end of input.
+        if found_alns != database.alignments() {
+            status = Err(format!("Expected {} alignments, but found {}", database.alignments(), found_alns));
+        }
+    }
+
+    // Wait for the output thread to finish.
+    let output_result = from_output.recv().unwrap_or(Ok(()));
+    let _ = output_thread.join();
+    output_result?;
+
+    status
+}
+
+//-----------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum SortKey {
+    Interval,
+    Hash,
+}
+
+impl From<SortKey> for KeyType {
+    fn from(value: SortKey) -> Self {
+        match value {
+            SortKey::Interval => KeyType::NodeInterval,
+            SortKey::Hash => KeyType::Hash,
+        }
+    }
+}
+
+#[derive(Args)]
+struct SortArgs {
+    /// GAF alignment file (may be gzip-compressed)
+    #[arg(value_name = "input.gaf[.gz]")]
+    input: PathBuf,
+
+    /// Output file name (default: stdout)
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+
+    /// Sorting key type
+    #[arg(short, long, value_name = "TYPE", value_enum, default_value_t = SortKey::Interval)]
+    key_type: SortKey,
+
+    /// Number of records per file in initial sort
+    #[arg(short, long, value_name = "INT", value_parser = parse_quantity, default_value_t = SortParameters::DEFAULT_RECORDS_PER_FILE)]
+    records_per_file: usize,
+
+    /// Number of files to merge at once
+    #[arg(short, long, value_name = "INT", value_parser = parse_quantity, default_value_t = SortParameters::DEFAULT_FILES_PER_MERGE)]
+    files_per_merge: usize,
+
+    /// Buffer size for reading/writing records
+    #[arg(short, long, value_name = "INT", value_parser = parse_quantity, default_value_t = SortParameters::DEFAULT_BUFFER_SIZE)]
+    buffer_size: usize,
+
+    /// Number of worker threads
+    #[arg(short, long, value_name = "INT", value_parser = parse_quantity, default_value_t = 1)]
+    threads: usize,
+
+    /// Use stable sorting (slower but preserves order of equal keys)
+    #[arg(short, long)]
+    stable: bool,
+
+    /// Print progress information to stderr
+    #[arg(short, long)]
+    progress: bool,
+}
+
+fn sort(args: SortArgs) -> Result<(), String> {
+    let start_time = Instant::now();
+
+    // Validate options.
+    if args.records_per_file < 1000 {
+        return Err("--records-per-file must be at least 1000".to_string());
+    }
+    if args.files_per_merge < 2 {
+        return Err("--files-per-merge must be at least 2".to_string());
+    }
+    if args.buffer_size < 1 {
+        return Err("--buffer-size must be positive".to_string());
+    }
+
+    let output_file = args.output.unwrap_or_else(|| PathBuf::from("-"));
+
+    let mut params = SortParameters::new();
+    params.key_type = args.key_type.into();
+    params.records_per_file = args.records_per_file;
+    params.files_per_merge = args.files_per_merge;
+    params.buffer_size = args.buffer_size;
+    params.threads = args.threads;
+    params.stable = args.stable;
+    params.progress = args.progress;
+
+    // Sort the GAF file.
+    sort_gaf(&args.input, &output_file, &params)?;
+
+    if params.progress {
+        let end_time = Instant::now();
+        let seconds = end_time.duration_since(start_time).as_secs_f64();
+        eprintln!("Total time: {:.3} seconds", seconds);
+        utils::report_peak_memory_usage();
+    }
+
+    Ok(())
+}
+
+//-----------------------------------------------------------------------------
