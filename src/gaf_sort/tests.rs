@@ -310,16 +310,12 @@ fn sort_consistent_across_configs() {
     assert_lines_equal(&sorted_lines[0], &sorted_lines[2], "config 0", "config 2");
 }
 
-#[test]
-fn sort_stable() {
-    let params = SortParameters {
-        records_per_file: 100,
-        files_per_merge: 2,
-        stable: true,
-        ..SortParameters::default()
-    };
+// Runs a stable sort on a generated test case where all records share the same
+// key, and asserts that the output preserves the original input order.
+fn check_stable_sort(num_lines: usize, params: &SortParameters) {
+    assert!(params.stable, "check_stable_sort requires stable sorting");
 
-    let test_case = stable_sort_test_case(800);
+    let test_case = stable_sort_test_case(num_lines);
     let input = serialize::temp_file_name("gaf-sort-stable");
     {
         let mut options = OpenOptions::new();
@@ -330,7 +326,7 @@ fn sort_stable() {
     }
 
     let output = serialize::temp_file_name("gaf-sort-stable");
-    let result = sort_gaf(&input, &output, &params);
+    let result = sort_gaf(&input, &output, params);
     assert!(result.is_ok(), "sort_gaf failed: {}", result.err().unwrap());
     let result = result.unwrap();
     assert_eq!(result, test_case.len(), "sort_gaf sorted {} records, expected {}", result, test_case.len());
@@ -346,6 +342,38 @@ fn sort_stable() {
             "line {} differs between input and output: {:?} != {:?}",
             i, String::from_utf8_lossy(line), String::from_utf8_lossy(&test_case[i])
         );
+    }
+}
+
+#[test]
+fn sort_stable() {
+    let params = SortParameters {
+        records_per_file: 100,
+        files_per_merge: 2,
+        stable: true,
+        ..SortParameters::default()
+    };
+    check_stable_sort(800, &params);
+}
+
+// Stable sorting must preserve input order regardless of the number of worker
+// threads. Regression test for a bug where worker outputs were collected in
+// completion order rather than batch order, scrambling the order of equal-key
+// records. The parameters produce an odd number of initial batches (700 / 100 = 7)
+// so that, with two threads, the trailing batch is joined out of order during the
+// final drain, and several merge rounds (files_per_merge = 3) so the reordering is
+// exercised in both initial_sort and merge_round.
+#[test]
+fn sort_stable_multithreaded() {
+    for threads in 1..=4 {
+        let params = SortParameters {
+            records_per_file: 100,
+            files_per_merge: 3,
+            threads,
+            stable: true,
+            ..SortParameters::default()
+        };
+        check_stable_sort(700, &params);
     }
 }
 

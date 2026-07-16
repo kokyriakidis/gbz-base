@@ -389,9 +389,9 @@ impl ReadSet {
                 } else {
                     return Err(String::from("No reference provided for a reference-based GAF-base"));
                 }
-            }
-            if support::node_orientation(handle) == Orientation::Reverse {
-                sequence = support::reverse_complement(&sequence);
+                if support::node_orientation(handle) == Orientation::Reverse {
+                    sequence = support::reverse_complement(&sequence);
+                }
             }
 
             unsafe {

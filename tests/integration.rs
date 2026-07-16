@@ -58,6 +58,16 @@ fn compare_files(file1: &PathBuf, file2: &PathBuf) -> bool {
     content1 == content2
 }
 
+fn count_lines_in_file(file: &PathBuf) -> usize {
+    let content = fs::read_to_string(file).expect(&format!("Failed to read file: {}", file.display()));
+    content.lines().count()
+}
+
+fn count_lines(data: &[u8]) -> usize {
+    let content = String::from_utf8_lossy(data);
+    content.lines().count()
+}
+
 //-----------------------------------------------------------------------------
 
 fn get_binary_path(binary_name: &str) -> std::path::PathBuf {
@@ -620,12 +630,86 @@ fn gaf_base_compress_block_sizes() {
 //-----------------------------------------------------------------------------
 
 // Tests for `gaf-base decompress`.
+// There is no corresponding library function, and the output is not guaranteed to be
+// identical to the input. (For example, the representation is normalized and the order
+// of optional fields may change).
 
-// decompression with varying chunk sizes
+fn run_gaf_base_decompress(
+    input_file: &PathBuf, output_file: Option<&PathBuf>, graph_file: Option<&PathBuf>,
+    chunk_size: Option<usize>
+) -> Output {
+    let mut args = vec![String::from("decompress")];
+    if let Some(output_file) = output_file {
+        args.push(String::from("--output"));
+        args.push(output_file.to_str().unwrap().to_string());
+    }
+    if let Some(graph_file) = graph_file {
+        args.push(String::from("--reference"));
+        args.push(graph_file.to_str().unwrap().to_string());
+    }
+    if let Some(chunk_size) = chunk_size {
+        args.push(String::from("--chunk-size"));
+        args.push(chunk_size.to_string());
+    }
+    args.push(input_file.to_str().unwrap().to_string());
 
-// decompress ref-free without graph file
+    let binary = get_binary_path("gaf-base");
+    Command::new(binary)
+        .args(&args)
+        .output()
+        .expect("Failed to execute gaf-base decompress")
+}
 
-// decompression to a given file
+#[test]
+fn gaf_base_decompress() {
+    let mut temp_files = TempFileHandler::new();
+    let sorted_input = utils::get_test_data("micb-kir3dl1_HG003.gaf");
+    let gbwt_file = None;
+    let graph_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let params = GAFBaseParams::default();
+    let expected_lines = count_lines_in_file(&sorted_input);
+    let input_file = build_gaf_base_truth(&mut temp_files, &sorted_input, gbwt_file, None, &params);
+    let output_file = None;
+    let chunk_size = None;
+
+    // Default arguments, store the output as the expected baseline.
+    let baseline;
+    {
+        let output = run_gaf_base_decompress(&input_file, output_file, Some(&graph_file), chunk_size);
+        assert!(output.status.success(), "gaf-base decompress failed with status: {}", output.status);
+        let output_lines = count_lines(&output.stdout);
+        assert_eq!(output_lines, expected_lines, "Decompressed output has incorrect number of lines");
+        baseline = output.stdout;
+    }
+
+    // Try different chunk sizes.
+    for chunk_size in [1, 10, 100] {
+        let output = run_gaf_base_decompress(&input_file, output_file, Some(&graph_file), Some(chunk_size));
+        assert!(output.status.success(), "gaf-base decompress with chunk size {} failed with status: {}", chunk_size, output.status);
+        let correct_output = output.stdout == baseline;
+        assert!(correct_output, "gaf-base decompress produced unexpected output with chunk size {}", chunk_size);
+    }
+
+    // Specify an explicit output file.
+    {
+        let output_file = temp_files.new_file("decompressed");
+        let output = run_gaf_base_decompress(&input_file, Some(&output_file), Some(&graph_file), chunk_size);
+        assert!(output.status.success(), "gaf-base decompress with file output failed with status: {}", output.status);
+        let output_data = fs::read(&output_file).expect("Failed to read output file");
+        let correct_output = output_data == baseline;
+        assert!(correct_output, "gaf-base decompress produced unexpected output in file");
+    }
+
+    // Build and decompress a reference-free GAF-base.
+    {
+        let params = GAFBaseParams { reference_free: true, ..GAFBaseParams::default() };
+        let input_file = build_gaf_base_truth(&mut temp_files, &sorted_input, gbwt_file, Some(&graph_file), &params);
+        let output = run_gaf_base_decompress(&input_file, output_file, None, chunk_size);
+        assert!(output.status.success(), "reference-free gaf-base decompress failed with status: {}", output.status);
+        let correct_output = output.stdout == baseline;
+        assert!(correct_output, "gaf-base decompress produced unexpected output for reference-free GAF-base");
+    }
+}
 
 //-----------------------------------------------------------------------------
 

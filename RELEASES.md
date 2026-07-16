@@ -1,5 +1,18 @@
 # GBZ-base releases
 
+## Current version
+
+* Consolidated binaries:
+  * `gbz-base construct` replaces `gbz2db`.
+  * `gbz-base query` replaces `query`.
+  * `gaf-base sort` replaces `gafsort`.
+  * `gaf-base compress` replaces `gaf2db`.
+  * `gaf-base decompress` replaces `db2gaf`.
+  * Old binaries are deprecated but still available.
+* Bug fixes:
+  * `gaf-base decompress` works correctly with a reference-free GAF-base.
+  * Multithreaded stable GAF sorting works correctly.
+
 ## GBZ-base 0.5.1 (2026-06-02)
 
 * GBZ-base construction prints a warning if it cannot find top-level chains for all graph components.
