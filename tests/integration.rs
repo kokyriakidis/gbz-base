@@ -1,16 +1,23 @@
 //! Integration tests for binaries.
 
+use std::collections::HashSet;
 use std::fs;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::process::{Command, Output, ExitStatus};
 
-use gbz_base::GBZBase;
+use gbz_base::{GBZBase, GraphInterface, SnarlOutput, PathIndex};
 use gbz_base::{GAFBase, GAFBaseParams, GraphReference};
+use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput, ReadSet, AlignmentOutput};
 use gbz_base::gaf_sort::{sort_gaf, SortParameters, KeyType};
-use gbz_base::utils;
+use gbz_base::{formats, utils};
 
-use gbz::GBZ;
+use gbz::{GBZ, FullPathName, Orientation};
+use gbz::support::{self, Chains};
 use simple_sds::serialize;
+
+use rand::prelude::IndexedRandom;
+use rand::Rng;
 
 //-----------------------------------------------------------------------------
 
@@ -715,18 +722,444 @@ fn gaf_base_decompress() {
 
 // Tests for `gbz-base query`.
 
-// nodes, handles, offsets, intervals, between
+fn parse_gfa(gfa_file: &PathBuf) -> (Vec<usize>, Vec<(FullPathName, Range<usize>)>) {
+    let gfa_data = fs::read(gfa_file).expect("Failed to read GFA file");
+    let gfa_str = String::from_utf8_lossy(&gfa_data);
 
-// context length, snarls, extend snarls
+    let mut ref_samples = HashSet::new();
+    let mut node_ids = Vec::new();
+    let mut reference_paths = Vec::new();
+    for gfa_line in gfa_str.lines() {
+        if gfa_line.starts_with("H") {
+            let fields = gfa_line.split('\t').collect::<Vec<_>>();
+            for field in &fields[1..] {
+                let tag_parts = field.split(':').collect::<Vec<_>>();
+                if tag_parts.len() == 3 && tag_parts[0] == "RS" && tag_parts[1] == "Z" {
+                    for sample in tag_parts[2].split(' ') {
+                        ref_samples.insert(sample.to_string());
+                    }
+                }
+            }
+        } else if gfa_line.starts_with('S') {
+            let fields = gfa_line.split('\t').collect::<Vec<_>>();
+            if fields.len() >= 2 {
+                if let Ok(node_id) = fields[1].parse::<usize>() {
+                    node_ids.push(node_id);
+                }
+            }
+        } else if gfa_line.starts_with('W') {
+            let fields = gfa_line.split('\t').collect::<Vec<_>>();
+            if fields.len() >= 6 && ref_samples.contains(fields[1]) {
+                let path_name = FullPathName::reference(fields[1], fields[3]);
+                let start = fields[4].parse::<usize>().expect("Failed to parse start position");
+                let end = fields[5].parse::<usize>().expect("Failed to parse end position");
+                reference_paths.push((path_name, start..end));
+            }
+        }
+    }
 
-// safety limit
+    (node_ids, reference_paths)
+}
 
-// distinct, ref-only
+fn random_reference_offset(reference_paths: &[(FullPathName, Range<usize>)], rng: &mut impl Rng) -> (SubgraphQuery, Vec<String>) {
+    let (path_name, range) = reference_paths.choose(rng).expect("No reference paths available");
+    let offset = rng.random_range(range.clone());
+    let args = vec![
+        String::from("--sample"),
+        path_name.sample.clone(),
+        String::from("--contig"),
+        path_name.contig.clone(),
+        String::from("--offset"),
+        offset.to_string(),
+    ];
+    (SubgraphQuery::path_offset(path_name, offset), args)
+}
 
-// cigar
+fn random_reference_interval(reference_paths: &[(FullPathName, Range<usize>)], rng: &mut impl Rng) -> (SubgraphQuery, Vec<String>) {
+    let (path_name, range) = reference_paths.choose(rng).expect("No reference paths available");
+    let len = rng.random_range(10..300);
+    let offset = rng.random_range(range.start..(range.end - len));
+    let args = vec![
+        String::from("--sample"),
+        path_name.sample.clone(),
+        String::from("--contig"),
+        path_name.contig.clone(),
+        String::from("--interval"),
+        format!("{}..{}", offset, offset + len),
+    ];
+    (SubgraphQuery::path_interval(path_name, offset..(offset + len)), args)
+}
 
-// JSON output
+fn random_node(node_ids: &[usize], rng: &mut impl Rng) -> (SubgraphQuery, Vec<String>) {
+    let node_id = *node_ids.choose(rng).expect("No node IDs available");
+    (SubgraphQuery::nodes([node_id]), vec![String::from("--node"), node_id.to_string()])
+}
 
-// GAF output: overlapping, clipped, contained
+fn random_node_with_neighbors(node_ids: &[usize], rng: &mut impl Rng) -> (SubgraphQuery, Vec<String>) {
+    let initial_offset = rng.random_range(0..node_ids.len());
+    let start = if initial_offset > 0 { initial_offset - 1 } else { 0 };
+    let end = if initial_offset + 1 <= node_ids.len() { initial_offset + 1 } else { node_ids.len() };
+    let mut args = Vec::new();
+    for node_id in &node_ids[start..end] {
+        args.push(String::from("--node"));
+        args.push(node_id.to_string());
+    }
+    (SubgraphQuery::nodes(node_ids[start..end].to_vec()), args)
+}
+
+fn append_query_variants(
+    queries: &mut Vec<SubgraphQuery>, arg_lists: &mut Vec<Vec<String>>,
+    query: SubgraphQuery, args: Vec<String>
+) {
+    for context in [0, 30, 100] {
+        for snarls in [SnarlOutput::None, SnarlOutput::Contained, SnarlOutput::Overlapping] {
+            for output in [HaplotypeOutput::All, HaplotypeOutput::Distinct, HaplotypeOutput::ReferenceOnly] {
+                if query.is_node_based() && output == HaplotypeOutput::ReferenceOnly {
+                    // No reference path.
+                    continue;
+                }
+                if query.is_multi_node() && snarls == SnarlOutput::Overlapping {
+                    // Not implemented.
+                    continue;
+                }
+                queries.push(query.clone().with_context(context).with_snarls(snarls).with_output(output));
+                let mut args = args.to_vec();
+                args.push(String::from("--context"));
+                args.push(context.to_string());
+                match snarls {
+                    SnarlOutput::None => {},
+                    SnarlOutput::Contained => {
+                        args.push(String::from("--snarls"));
+                    },
+                    SnarlOutput::Overlapping => {
+                        args.push(String::from("--extend-snarls"));
+                    },
+                }
+                match output {
+                    HaplotypeOutput::All => {},
+                    HaplotypeOutput::Distinct => {
+                        args.push(String::from("--distinct"));
+                    },
+                    HaplotypeOutput::ReferenceOnly => {
+                        args.push(String::from("--reference-only"));
+                    },
+                }
+                arg_lists.push(args);
+            }
+        }
+    }
+}
+
+fn generate_queries(gfa_file: &PathBuf, include_variants: bool) -> (Vec<SubgraphQuery>, Vec<Vec<String>>) {
+    const NUM_QUERIES: usize = 3;
+
+    let (node_ids, reference_paths) = parse_gfa(gfa_file);
+    let mut queries = Vec::new();
+    let mut arg_lists = Vec::new();
+    let mut rng = rand::rng();
+    for _ in 0..NUM_QUERIES {
+        let (query, args) = random_reference_offset(&reference_paths, &mut rng);
+        // We also want a version of the query with default params and args.
+        queries.push(query.clone());
+        arg_lists.push(args.clone());
+        if include_variants {
+            append_query_variants(&mut queries, &mut arg_lists, query, args);
+        }
+    }
+    for _ in 0..NUM_QUERIES {
+        let (query, args) = random_reference_interval(&reference_paths, &mut rng);
+        queries.push(query.clone());
+        arg_lists.push(args.clone());
+        if include_variants {
+            append_query_variants(&mut queries, &mut arg_lists, query, args);
+        }
+    }
+    for _ in 0..NUM_QUERIES {
+        let (query, args) = random_node(&node_ids, &mut rng);
+        queries.push(query.clone());
+        arg_lists.push(args.clone());
+        if include_variants {
+            append_query_variants(&mut queries, &mut arg_lists, query, args);
+        }
+    }
+    for _ in 0..NUM_QUERIES {
+        let (query, args) = random_node_with_neighbors(&node_ids, &mut rng);
+        queries.push(query.clone());
+        arg_lists.push(args.clone());
+        if include_variants {
+            append_query_variants(&mut queries, &mut arg_lists, query, args);
+        }
+    }
+
+    (queries, arg_lists)
+}
+
+fn run_gbz_base_query(
+    graph_file: &PathBuf, chains_file: Option<&PathBuf>,
+    query_args: &[String], output_format: Option<&str>, with_cigar: bool
+) -> Output {
+    let mut args = vec![String::from("query")];
+    args.extend_from_slice(query_args);
+    if let Some(format) = output_format {
+        args.push(String::from("--format"));
+        args.push(format.to_string());
+    }
+    if with_cigar {
+        args.push(String::from("--cigar"));
+    }
+    if let Some(chains_file) = chains_file {
+        args.push(String::from("--chains"));
+        args.push(chains_file.to_str().unwrap().to_string());
+    }
+    args.push(graph_file.to_str().unwrap().to_string());
+
+    let binary = get_binary_path("gbz-base");
+    Command::new(&binary)
+        .args(&args)
+        .output()
+        .expect("Failed to execute gbz-base query")
+}
+
+// Returns an error if the query itself fails.
+fn run_subgraph_query_with_gbz(
+    graph: &GBZ, path_index: Option<&PathIndex>, chains: Option<&Chains>,
+    query: &SubgraphQuery, output_format: &str, with_cigar: bool
+) -> Result<Vec<u8>, String> {
+    let mut subgraph = Subgraph::new();
+    subgraph.from_gbz(graph, path_index, chains, query)?;
+
+    let mut output = Vec::new();
+    match output_format {
+        "gfa" => {
+            let result = subgraph.write_gfa(&mut output, with_cigar);
+            assert!(result.is_ok(), "Failed to write GFA output for query {}: {}", query, result.unwrap_err());
+        },
+        "json" => {
+            let result = subgraph.write_json(&mut output, with_cigar);
+            assert!(result.is_ok(), "Failed to write JSON output for query {}: {}", query, result.unwrap_err());
+        },
+        _ => panic!("Unsupported output format: {}", output_format),
+    }
+
+    Ok(output)
+}
+
+// Returns an error if the query itself fails.
+fn run_subgraph_query_with_db(
+    interface: &mut GraphInterface, query: &SubgraphQuery, output_format: &str, with_cigar: bool
+) -> Result<Vec<u8>, String> {
+    let mut subgraph = Subgraph::new();
+    subgraph.from_db(interface, query)?;
+
+    let mut output = Vec::new();
+    match output_format {
+        "gfa" => {
+            let result = subgraph.write_gfa(&mut output, with_cigar);
+            assert!(result.is_ok(), "Failed to write GFA output for query {}: {}", query, result.unwrap_err());
+        },
+        "json" => {
+            let result = subgraph.write_json(&mut output, with_cigar);
+            assert!(result.is_ok(), "Failed to write JSON output for query {}: {}", query, result.unwrap_err());
+        },
+        _ => panic!("Unsupported output format: {}", output_format),
+    }
+
+    Ok(output)
+}
+
+#[test]
+fn gbz_base_query() {
+    let mut temp_files = TempFileHandler::new();
+
+    let graph_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let gbz: GBZ = serialize::load_from(&graph_file).expect("Failed to load GBZ graph");
+    let path_index = PathIndex::new(&gbz, GBZBase::INDEX_INTERVAL, false).expect("Failed to build path index");
+    let chains_file = utils::get_test_data("micb-kir3dl1.chains");
+    let chains: Chains = serialize::load_from(&chains_file).expect("Failed to load chains file");
+
+    let gbz_base_file = build_gbz_base_truth(&mut temp_files, &graph_file, None);
+    let database = GBZBase::open(&gbz_base_file).expect("Failed to open GBZ-base database");
+    let mut interface = GraphInterface::new(&database).expect("Failed to create GraphInterface");
+
+    let gfa_file = utils::get_test_data("micb-kir3dl1.gfa");
+    let (queries, arg_lists) = generate_queries(&gfa_file, true);
+
+    for (query, args) in queries.iter().zip(arg_lists.iter()) {
+        for output_format in ["gfa", "json"] {
+            for with_cigar in [false, true] {
+                let gbz_output = run_gbz_base_query(&graph_file, Some(&chains_file), args, Some(output_format), with_cigar);
+                assert!(gbz_output.status.success(), "gbz-base query with GBZ failed for query {} with format {} and CIGAR {}", query, output_format, with_cigar);
+                let library_gbz = run_subgraph_query_with_gbz(&gbz, Some(&path_index), Some(&chains), query, output_format, with_cigar);
+                assert!(library_gbz.is_ok(), "Subgraph query failed for query {} with format {} and CIGAR {}: {}", query, output_format, with_cigar, library_gbz.unwrap_err());
+                let gbz_query_ok = library_gbz.unwrap() == gbz_output.stdout;
+                assert!(gbz_query_ok, "Output mismatch for query {} with format {} and CIGAR {}", query, output_format, with_cigar);
+
+                let db_output = run_gbz_base_query(&gbz_base_file, None, args, Some(output_format), with_cigar);
+                assert!(db_output.status.success(), "gbz-base query with DB failed for query {} with format {} and CIGAR {}", query, output_format, with_cigar);
+                let library_db = run_subgraph_query_with_db(&mut interface, query, output_format, with_cigar);
+                assert!(library_db.is_ok(), "Subgraph query failed for query {} with format {} and CIGAR {}: {}", query, output_format, with_cigar, library_db.unwrap_err());
+                let db_query_ok = library_db.unwrap() == db_output.stdout;
+                assert!(db_query_ok, "Output mismatch for query {} with format {} and CIGAR {}", query, output_format, with_cigar);
+            }
+        }
+    }
+}
+
+#[test]
+fn gbz_base_query_between() {
+    let mut temp_files = TempFileHandler::new();
+
+    let graph_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let gbz: GBZ = serialize::load_from(&graph_file).expect("Failed to load GBZ graph");
+
+    let gbz_base_file = build_gbz_base_truth(&mut temp_files, &graph_file, None);
+    let database = GBZBase::open(&gbz_base_file).expect("Failed to open GBZ-base database");
+    let mut interface = GraphInterface::new(&database).expect("Failed to create GraphInterface");
+
+    let node_pairs = vec![
+        (400, 403),   // Adjacent boundary nodes in the first component.
+        (103, 255),   // Distant boundary nodes in the first component.
+        (1, 659),     // Start/end of the first component.
+        (1981, 1984), // Adjacent boundary nodes in the second component.
+        (1169, 1550), // Distant boundary nodes in the second component.
+        (660, 2891),  // Start/end of the second component.
+    ];
+    for (start, end) in node_pairs {
+        for limit in [None, Some(10), Some(100), Some(1000)] {
+            let query = SubgraphQuery::between(
+                support::encode_node(start, Orientation::Forward),
+                support::encode_node(end, Orientation::Forward),
+                limit
+            );
+            let mut args = vec![
+                String::from("--between"),
+                format!("{}:{}", start, end),
+            ];
+            if let Some(l) = limit {
+                args.push(String::from("--limit"));
+                args.push(l.to_string());
+            }
+
+            let gbz_output = run_gbz_base_query(&graph_file, None, &args, None, false);
+            let library_gbz = run_subgraph_query_with_gbz(&gbz, None, None, &query, "gfa", false);
+            assert_eq!(gbz_output.status.success(), library_gbz.is_ok(), "Query success mismatch with GBZ for query {}", query);
+            if let Ok(output) = library_gbz {
+                let gbz_query_ok = output == gbz_output.stdout;
+                assert!(gbz_query_ok, "Output mismatch for query {}", query);
+            }
+
+            let db_output = run_gbz_base_query(&gbz_base_file, None, &args, Some("gfa"), false);
+            let library_db = run_subgraph_query_with_db(&mut interface, &query, "gfa", false);
+            assert_eq!(db_output.status.success(), library_db.is_ok(), "Query success mismatch with DB for query {}", query);
+            if let Ok(output) = library_db {
+                let db_query_ok = output == db_output.stdout;
+                assert!(db_query_ok, "Output mismatch for query {}", query);
+            }
+        }
+    }
+}
+
+// Returns GAF output.
+// We assume that the subgraph query itself has been tested earlier.
+fn run_gbz_gaf_base_query(
+    temp_files: &mut TempFileHandler,
+    graph_file: &PathBuf, gaf_base_file: &PathBuf,
+    query_args: &[String], alignment_output: Option<AlignmentOutput>
+) -> Vec<u8> {
+    let mut query_args = query_args.to_vec();
+    query_args.push(String::from("--gaf-base"));
+    query_args.push(gaf_base_file.to_str().unwrap().to_string());
+    query_args.push(String::from("--gaf-output"));
+    let gaf_output_file = temp_files.new_file("gaf-base-output");
+    query_args.push(gaf_output_file.to_str().unwrap().to_string());
+    match alignment_output {
+        Some(output) => {
+            query_args.push(String::from("--alignments"));
+            query_args.push(output.to_string());
+        },
+        None => {},
+    }
+
+    let output = run_gbz_base_query(graph_file, None, &query_args, None, false);
+    assert!(output.status.success(), "gbz-base query with args {:?} failed with status: {}", query_args, output.status);
+    let gaf_data = fs::read(&gaf_output_file).expect("Failed to read GAF output file");
+
+    gaf_data
+}
+
+fn write_gaf(read_set: &ReadSet, subgraph: &Subgraph) -> Vec<u8> {
+    let mut output = Vec::new();
+    formats::write_gaf_file_header(&mut output).expect("Failed to write GAF file header");
+    if let Some(graph_name) = subgraph.graph_name() {
+        let header_lines = graph_name.to_gaf_header_lines();
+        formats::write_header_lines(&header_lines, &mut output).expect("Failed to write GAF header lines");
+    }
+    read_set.to_gaf(&mut output).expect("Failed to write GAF records");
+    output
+}
+
+// Returns GAF output.
+// We assume that the subgraph query itself has been tested earlier.
+fn run_subgraph_query_with_gbz_gaf(
+    graph: &GBZ, path_index: Option<&PathIndex>, gaf_base: &GAFBase,
+    query: &SubgraphQuery, output: AlignmentOutput
+) -> Vec<u8> {
+    let mut subgraph = Subgraph::new();
+    let result = subgraph.from_gbz(graph, path_index, None, query);
+    assert!(result.is_ok(), "Failed to build subgraph for query {}: {}", query, result.unwrap_err());
+    let read_set = ReadSet::new(GraphReference::Gbz(graph), &subgraph, gaf_base, output);
+    assert!(read_set.is_ok(), "Failed to build read set for query {} with alignment output {}: {}", query, read_set.unwrap_err(), output);
+    write_gaf(&read_set.unwrap(), &subgraph)
+}
+
+// Returns GAF output.
+// We assume that the subgraph query itself has been tested earlier.
+fn run_subgraph_query_with_db_gaf(
+    interface: &mut GraphInterface, gaf_base: &GAFBase,
+    query: &SubgraphQuery, output: AlignmentOutput
+) -> Vec<u8> {
+    let mut subgraph = Subgraph::new();
+    let result = subgraph.from_db(interface, query);
+    assert!(result.is_ok(), "Failed to build subgraph for query {}: {}", query, result.unwrap_err());
+    let read_set = ReadSet::new(GraphReference::Db(interface), &subgraph, gaf_base, output);
+    assert!(read_set.is_ok(), "Failed to build read set for query {} with alignment output {}: {}", query, read_set.unwrap_err(), output);
+    write_gaf(&read_set.unwrap(), &subgraph)
+}
+
+#[test]
+fn gbz_base_query_with_gaf_base() {
+    let mut temp_files = TempFileHandler::new();
+
+    let graph_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let gbz: GBZ = serialize::load_from(&graph_file).expect("Failed to load GBZ graph");
+    let path_index = PathIndex::new(&gbz, GBZBase::INDEX_INTERVAL, false).expect("Failed to build path index");
+
+    let gbz_base_file = build_gbz_base_truth(&mut temp_files, &graph_file, None);
+    let database = GBZBase::open(&gbz_base_file).expect("Failed to open GBZ-base database");
+    let mut interface = GraphInterface::new(&database).expect("Failed to create GraphInterface");
+
+    let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
+    let gaf_base_file = build_gaf_base_truth(&mut temp_files, &gaf_file, None, None, &GAFBaseParams::default());
+    let gaf_base = GAFBase::open(&gaf_base_file).expect("Failed to open GAF-base database");
+
+    let gfa_file = utils::get_test_data("micb-kir3dl1.gfa");
+    let (queries, arg_lists) = generate_queries(&gfa_file, false);
+
+    for (query, args) in queries.iter().zip(arg_lists.iter()) {
+        for alignment_output in [None, Some(AlignmentOutput::Overlapping), Some(AlignmentOutput::Clipped), Some(AlignmentOutput::Contained)] {
+
+            let binary_gbz_gaf = run_gbz_gaf_base_query(&mut temp_files, &graph_file, &gaf_base_file, args, alignment_output);
+            let output = alignment_output.unwrap_or(AlignmentOutput::Clipped);
+            let library_gbz_gaf = run_subgraph_query_with_gbz_gaf(&gbz, Some(&path_index), &gaf_base, &query, output);
+            let gbz_gaf_query_ok = binary_gbz_gaf == library_gbz_gaf;
+            assert!(gbz_gaf_query_ok, "Output mismatch for query {} with alignment output {}", query, output);
+
+            let binary_db_gaf = run_gbz_gaf_base_query(&mut temp_files, &gbz_base_file, &gaf_base_file, args, alignment_output);
+            let library_db_gaf = run_subgraph_query_with_db_gaf(&mut interface, &gaf_base, &query, output);
+            let db_gaf_query_ok = binary_db_gaf == library_db_gaf;
+            assert!(db_gaf_query_ok, "Output mismatch for query {} with alignment output {}", query, output);
+        }
+    }
+}
 
 //-----------------------------------------------------------------------------
