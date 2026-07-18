@@ -12,6 +12,9 @@ use getopts::Options;
 //-----------------------------------------------------------------------------
 
 fn main() -> Result<(), String> {
+    eprintln!("This tool has been deprecated. Please use `gbz-base construct` instead.");
+    eprintln!();
+
     let start_time = Instant::now();
 
     // Parse arguments.

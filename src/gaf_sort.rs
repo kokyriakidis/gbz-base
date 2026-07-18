@@ -267,9 +267,30 @@ impl SortParameters {
     /// Default for `buffer_size`.
     pub const DEFAULT_BUFFER_SIZE: usize = 1000;
 
+    /// Default `records_per_file` with the long read preset.
+    pub const LONG_READ_RECORDS_PER_FILE: usize = 10_000;
+
+    /// Available presets.
+    pub const PRESETS: [&'static str; 3] = [ "default", "short", "long" ];
+
     /// Returns a new `SortParameters` with default values.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Returns a new `SortParameters` with the given preset.
+    ///
+    /// Returns an error if the preset is unknown.
+    /// Available presets are [`Self::PRESETS`].
+    pub fn with_preset(preset: &str) -> Result<Self, String> {
+        match preset {
+            "default" | "short" => Ok(Self::default()),
+            "long" => Ok(Self {
+                records_per_file: Self::LONG_READ_RECORDS_PER_FILE,
+                ..Self::default()
+            }),
+            _ => Err(format!("Unknown preset: {}", preset)),
+        }
     }
 
     /// Validates the parameters and returns an error message if they are invalid.
@@ -407,15 +428,18 @@ fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<Ini
         eprintln!("Initial sort: {} records per file", params.records_per_file);
     }
 
-    let mut workers: Vec<Option<JoinHandle<Result<Arc<TempFile>, String>>>> = Vec::with_capacity(params.threads);
+    // Workers are joined in completion order rather than batch order, so we tag each
+    // output with its batch index and restore the original order afterwards. Stable
+    // merging relies on the temporary files being in the original input order.
+    let mut workers: Vec<Option<(JoinHandle<Result<Arc<TempFile>, String>>, usize)>> = Vec::with_capacity(params.threads);
     for _ in 0..params.threads {
         workers.push(None);
     }
-    let mut outputs = Vec::new();
-    let mut join = |worker: Option<JoinHandle<Result<Arc<TempFile>, String>>>, thread: usize| -> bool {
-        if let Some(worker) = worker {
+    let mut outputs: Vec<(usize, Arc<TempFile>)> = Vec::new();
+    let mut join = |worker: Option<(JoinHandle<Result<Arc<TempFile>, String>>, usize)>, thread: usize| -> bool {
+        if let Some((worker, batch_index)) = worker {
             match worker.join() {
-                Ok(Ok(sorted)) => outputs.push(sorted),
+                Ok(Ok(sorted)) => outputs.push((batch_index, sorted)),
                 Ok(Err(e)) => {
                     eprintln!("Worker thread {} failed: {}", thread, e);
                     return false;
@@ -475,7 +499,7 @@ fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<Ini
         }
         let key_type = params.key_type;
         let stable = params.stable;
-        workers[thread] = Some(std::thread::spawn(move || sort_to_temp(lines, key_type, stable)));
+        workers[thread] = Some((std::thread::spawn(move || sort_to_temp(lines, key_type, stable)), batch));
         batch += 1;
     }
 
@@ -488,6 +512,11 @@ fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<Ini
     if !ok {
         return Err(String::from("Initial sort failed"));
     }
+
+    // Restore the original batch order for stable merging.
+    outputs.sort_by_key(|(batch_index, _)| *batch_index);
+    let outputs: Vec<Arc<TempFile>> = outputs.into_iter().map(|(_, file)| file).collect();
+
     if params.progress {
         eprintln!(
             "Initial sort finished with {} records in {} files",
@@ -506,15 +535,18 @@ fn merge_round(inputs: Vec<Arc<TempFile>>, round: usize, params: &SortParameters
         eprintln!("Round {}: {} files per batch", round, params.files_per_merge);
     }
 
-    let mut workers: Vec<Option<JoinHandle<Result<Arc<TempFile>, String>>>> = Vec::with_capacity(params.threads);
+    // Workers are joined in completion order rather than batch order, so we tag each
+    // output with its batch index and restore the original order afterwards. Stable
+    // merging relies on the temporary files being in the original input order.
+    let mut workers: Vec<Option<(JoinHandle<Result<Arc<TempFile>, String>>, usize)>> = Vec::with_capacity(params.threads);
     for _ in 0..params.threads {
         workers.push(None);
     }
-    let mut outputs = Vec::new();
-    let mut join = |worker: Option<JoinHandle<Result<Arc<TempFile>, String>>>, thread: usize| -> bool {
-        if let Some(worker) = worker {
+    let mut outputs: Vec<(usize, Arc<TempFile>)> = Vec::new();
+    let mut join = |worker: Option<(JoinHandle<Result<Arc<TempFile>, String>>, usize)>, thread: usize| -> bool {
+        if let Some((worker, batch_index)) = worker {
             match worker.join() {
-                Ok(Ok(merged)) => outputs.push(merged),
+                Ok(Ok(merged)) => outputs.push((batch_index, merged)),
                 Ok(Err(e)) => {
                     eprintln!("Worker thread {} failed: {}", thread, e);
                     return false;
@@ -543,7 +575,7 @@ fn merge_round(inputs: Vec<Arc<TempFile>>, round: usize, params: &SortParameters
         }
         let batch_files = inputs[i..end].to_vec();
         let buffer_size = params.buffer_size;
-        workers[thread] = Some(std::thread::spawn(move || merge_files(batch_files, buffer_size)));
+        workers[thread] = Some((std::thread::spawn(move || merge_files(batch_files, buffer_size)), batch));
         i = end;
         batch += 1;
     }
@@ -555,13 +587,18 @@ fn merge_round(inputs: Vec<Arc<TempFile>>, round: usize, params: &SortParameters
     }
     if i + 1 == inputs.len() {
         // If we have one file left that wasn't included in a batch, we pass it to the next round.
-        outputs.push(inputs[i].clone());
+        // It comes after every merged batch, so give it the next batch index.
+        outputs.push((batch, inputs[i].clone()));
     }
 
     if !ok {
         let msg = format!("Merge round {} failed", round);
         return Err(msg);
     }
+
+    // Restore the original batch order for stable merging.
+    outputs.sort_by_key(|(batch_index, _)| *batch_index);
+    let outputs: Vec<Arc<TempFile>> = outputs.into_iter().map(|(_, file)| file).collect();
     if params.progress {
         eprintln!("Round {} finished with {} files", round, outputs.len());
     }

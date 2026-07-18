@@ -8,6 +8,8 @@
 //   * Trace each alignment and clip it into pieces corresponding to the chunks
 //   * Write the clipped pieces to the appropriate chunk GAF files
 
+// FIXME: And this should become gbz-base chunk
+
 fn main() -> Result<(), String> {
     Ok(())
 }

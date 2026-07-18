@@ -189,7 +189,7 @@ impl SubgraphQuery {
     ///
     /// Panics if this is a node-based query and the output would be [`HaplotypeOutput::ReferenceOnly`].
     pub fn with_output(self, output: HaplotypeOutput) -> Self {
-        if let QueryType::Nodes(_) = self.query_type {
+        if self.is_node_based() {
             assert!(output != HaplotypeOutput::ReferenceOnly, "Reference-only output is not supported for node-based queries");
         }
         SubgraphQuery { output, ..self }
@@ -197,6 +197,21 @@ impl SubgraphQuery {
 
     pub(super) fn query_type(&self) -> &QueryType {
         &self.query_type
+    }
+
+    /// Returns `true` if this is a reference-based query.
+    pub fn is_reference_based(&self) -> bool {
+        matches!(self.query_type, QueryType::PathOffset(_) | QueryType::PathInterval(_, _))
+    }
+
+    /// Returns `true` if this is a node-based query.
+    pub fn is_node_based(&self) -> bool {
+        matches!(self.query_type, QueryType::Nodes(_) | QueryType::Between(_, _))
+    }
+
+    /// Returns `true` if this is a multi-node query.
+    pub fn is_multi_node(&self) -> bool {
+        matches!(self.query_type, QueryType::Nodes(ref nodes) if nodes.len() > 1)
     }
 
     /// Returns the context length (in bp) for the query.
