@@ -267,6 +267,26 @@ fn run_gaf_base_sort(input_file: &PathBuf, output_file: Option<&PathBuf>, params
         .expect("Failed to execute gaf-base sort")
 }
 
+fn run_gaf_base_sort_with_preset(
+    input_file: &PathBuf, output_file: &PathBuf,
+    preset: &str, other_args: &[String]
+) {
+    let mut args = vec![String::from("sort")];
+    args.push(String::from("--output"));
+    args.push(output_file.to_str().unwrap().to_string());
+    args.push(String::from("--preset"));
+    args.push(preset.to_string());
+    args.extend_from_slice(other_args);
+    args.push(input_file.to_str().unwrap().to_string());
+
+    let binary = get_binary_path("gaf-base");
+    let result = Command::new(binary)
+        .args(&args)
+        .output()
+        .expect("Failed to execute gaf-base sort with preset");
+    assert!(result.status.success(), "gaf-base sort with preset {} and args {:?} failed with status: {}", preset, other_args, result.status);
+}
+
 fn count_merge_rounds(stderr: &[u8]) -> usize {
     let stderr_str = String::from_utf8_lossy(stderr);
     let lines = stderr_str.lines();
@@ -414,7 +434,36 @@ fn gaf_base_sort_params() {
     }
 }
 
-// FIXME: presets
+#[test]
+fn gaf_base_sort_presets() {
+    let mut temp_files = TempFileHandler::new();
+    let input_file = utils::get_test_data("shuffled.gaf");
+
+    for preset in SortParameters::PRESETS {
+        // First we use just the preset itself.
+        let mut params = SortParameters::with_preset(preset).unwrap();
+        let truth_file = temp_files.new_file("sort-preset");
+        sort_gaf(&input_file, &truth_file, &params).expect("Failed to sort GAF file for truth");
+        let truth = fs::read(&truth_file).expect("Failed to read truth file");
+        let output_file = temp_files.new_file("sort-preset");
+        run_gaf_base_sort_with_preset(&input_file, &output_file, preset, &[]);
+        let output = fs::read(&output_file).expect("Failed to read output file");
+        let correct_output = output == truth;
+        assert!(correct_output, "gaf-base sort produced incorrect output with preset {}", preset);
+
+        // Then we try overriding something in the preset.
+        params.records_per_file /= 2;
+        let truth_file = temp_files.new_file("sort-preset-override");
+        sort_gaf(&input_file, &truth_file, &params).expect("Failed to sort GAF file for truth");
+        let truth = fs::read(&truth_file).expect("Failed to read truth file");
+        let output_file = temp_files.new_file("sort-preset-override");
+        let other_args = vec![String::from("--records-per-file"), params.records_per_file.to_string()];
+        run_gaf_base_sort_with_preset(&input_file, &output_file, preset, &other_args);
+        let output = fs::read(&output_file).expect("Failed to read output file");
+        let correct_output = output == truth;
+        assert!(correct_output, "gaf-base sort produced incorrect output with preset {} and override", preset);
+    }
+}
 
 //-----------------------------------------------------------------------------
 
@@ -469,6 +518,26 @@ fn run_gaf_base_compress(
         .output()
         .expect("Failed to execute gaf-base compress");
     (output_file, result.status)
+}
+
+fn run_gaf_base_compress_with_preset(
+    sorted_input: &PathBuf, output_file: &PathBuf,
+    preset: &str, other_args: &[String]
+) {
+    let mut args = vec![String::from("compress")];
+    args.push(String::from("--preset"));
+    args.push(preset.to_string());
+    args.push(String::from("--output"));
+    args.push(output_file.to_str().unwrap().to_string());
+    args.extend_from_slice(other_args);
+    args.push(sorted_input.to_str().unwrap().to_string());
+
+    let binary = get_binary_path("gaf-base");
+    let result = Command::new(binary)
+        .args(&args)
+        .output()
+        .expect("Failed to execute gaf-base compress");
+    assert!(result.status.success(), "gaf-base compress with preset {} and args {:?} failed with status: {}", preset, other_args, result.status);
 }
 
 #[test]
@@ -632,7 +701,34 @@ fn gaf_base_compress_block_sizes() {
     }
 }
 
-// FIXME: presets
+#[test]
+fn gaf_base_compress_presets() {
+    let mut temp_files = TempFileHandler::new();
+    let sorted_input = utils::get_test_data("micb-kir3dl1_HG003.gaf");
+    let gbwt_file = None;
+    let graph_file = None;
+
+    for preset in GAFBaseParams::PRESETS {
+        // First we use just the preset itself.
+        let mut params = GAFBaseParams::with_preset(preset).unwrap();
+        let truth_file = build_gaf_base_truth(
+            &mut temp_files, &sorted_input, gbwt_file, graph_file, &params
+        );
+        let output_file = temp_files.new_file("gaf-base");
+        run_gaf_base_compress_with_preset(&sorted_input, &output_file, preset, &[]);
+        assert!(compare_files(&output_file, &truth_file), "Output file does not match truth file for preset {}", preset);
+
+        // Then we try overriding something in the preset.
+        params.block_size *= 2;
+        let truth_file = build_gaf_base_truth(
+            &mut temp_files, &sorted_input, gbwt_file, graph_file, &params
+        );
+        let output_file = temp_files.new_file("gaf-base");
+        let other_args = vec![String::from("--block-size"), params.block_size.to_string()];
+        run_gaf_base_compress_with_preset(&sorted_input, &output_file, preset, &other_args);
+        assert!(compare_files(&output_file, &truth_file), "Output file does not match truth file for preset {} with override", preset);
+    }
+}
 
 //-----------------------------------------------------------------------------
 
