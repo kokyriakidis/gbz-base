@@ -18,7 +18,8 @@ use pggname::GraphName;
 
 use simple_sds::{binaries, serialize};
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use clap::parser::ValueSource;
 
 //-----------------------------------------------------------------------------
 
@@ -45,17 +46,47 @@ enum Commands {
 }
 
 fn main() -> Result<(), String> {
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).map_err(|e| e.to_string())?;
     match cli.command {
-        Commands::Compress(args) => compress(args),
+        Commands::Compress(args) => {
+            // `subcommand_matches` is guaranteed to succeed, as we just parsed the `compress` subcommand.
+            let sub_matches = matches.subcommand_matches("compress").unwrap();
+            compress(args, sub_matches)
+        },
         Commands::Decompress(args) => decompress(args),
-        Commands::Sort(args) => sort(args),
+        Commands::Sort(args) => {
+            // `subcommand_matches` is guaranteed to succeed, as we just parsed the `sort` subcommand.
+            let sub_matches = matches.subcommand_matches("sort").unwrap();
+            sort(args, sub_matches)
+        },
     }
 }
 
 // Parses an unsigned integer that may use suffixes such as `k` or `M`.
 fn parse_quantity(s: &str) -> Result<usize, String> {
     binaries::parse_unsigned(s).map_err(|x| x.to_string())
+}
+
+// Parameter preset shared by the `compress` and `sort` subcommands.
+// The variants match the presets in `GAFBaseParams` and `SortParameters`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Preset {
+    Default,
+    Short,
+    Long,
+}
+
+impl Preset {
+    // Returns the preset name understood by `GAFBaseParams::with_preset` and
+    // `SortParameters::with_preset`.
+    fn as_str(self) -> &'static str {
+        match self {
+            Preset::Default => "default",
+            Preset::Short => "short",
+            Preset::Long => "long",
+        }
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -73,6 +104,10 @@ struct CompressArgs {
     /// Build a reference-free GAF-base using this graph
     #[arg(short = 'r', long = "ref-free", value_name = "FILE")]
     ref_free: Option<PathBuf>,
+
+    /// Parameter preset
+    #[arg(long, value_name = "PRESET", value_enum, default_value_t = Preset::Default)]
+    preset: Preset,
 
     /// Number of alignments per block
     #[arg(short, long, value_name = "INT", value_parser = parse_quantity, default_value_t = GAFBaseParams::BLOCK_SIZE)]
@@ -95,17 +130,23 @@ struct CompressArgs {
     overwrite: bool,
 }
 
-fn compress(args: CompressArgs) -> Result<(), String> {
+fn compress(args: CompressArgs, matches: &clap::ArgMatches) -> Result<(), String> {
     let start_time = Instant::now();
 
-    let mut params = GAFBaseParams { block_size: args.block_size, ..Default::default() };
-    if args.no_quality {
+    // Start from the preset and let each option override it only if the user passed
+    // it explicitly. Otherwise clap's default values would silently override the preset.
+    let mut params = GAFBaseParams::with_preset(args.preset.as_str())?;
+    let explicit = |id: &str| matches.value_source(id) == Some(ValueSource::CommandLine);
+    if explicit("block_size") {
+        params.block_size = args.block_size;
+    }
+    if args.no_quality && explicit("no_quality") {
         params.store_quality_strings = false;
     }
-    if args.no_optional {
+    if args.no_optional && explicit("no_optional") {
         params.store_optional_fields = false;
     }
-    if args.ref_free.is_some() {
+    if args.ref_free.is_some() && explicit("ref_free") {
         params.reference_free = true;
     }
 
@@ -345,6 +386,10 @@ struct SortArgs {
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
 
+    /// Parameter preset
+    #[arg(long, value_name = "PRESET", value_enum, default_value_t = Preset::Default)]
+    preset: Preset,
+
     /// Sorting key type
     #[arg(short, long, value_name = "TYPE", value_enum, default_value_t = SortKey::Interval)]
     key_type: SortKey,
@@ -374,30 +419,48 @@ struct SortArgs {
     progress: bool,
 }
 
-fn sort(args: SortArgs) -> Result<(), String> {
+fn sort(args: SortArgs, matches: &clap::ArgMatches) -> Result<(), String> {
     let start_time = Instant::now();
-
-    // Validate options.
-    if args.records_per_file < 1000 {
-        return Err("--records-per-file must be at least 1000".to_string());
-    }
-    if args.files_per_merge < 2 {
-        return Err("--files-per-merge must be at least 2".to_string());
-    }
-    if args.buffer_size < 1 {
-        return Err("--buffer-size must be positive".to_string());
-    }
 
     let output_file = args.output.unwrap_or_else(|| PathBuf::from("-"));
 
-    let mut params = SortParameters::new();
-    params.key_type = args.key_type.into();
-    params.records_per_file = args.records_per_file;
-    params.files_per_merge = args.files_per_merge;
-    params.buffer_size = args.buffer_size;
-    params.threads = args.threads;
-    params.stable = args.stable;
-    params.progress = args.progress;
+    let mut params = SortParameters::with_preset(args.preset.as_str())?;
+
+    // Start from the preset and let each option override it only if the user passed
+    // it explicitly. Otherwise clap's default values would silently override the preset.
+    let explicit = |id: &str| matches.value_source(id) == Some(ValueSource::CommandLine);
+    if explicit("key_type") {
+        params.key_type = args.key_type.into();
+    }
+    if explicit("records_per_file") {
+        params.records_per_file = args.records_per_file;
+    }
+    if explicit("files_per_merge") {
+        params.files_per_merge = args.files_per_merge;
+    }
+    if explicit("buffer_size") {
+        params.buffer_size = args.buffer_size;
+    }
+    if explicit("threads") {
+        params.threads = args.threads;
+    }
+    if explicit("stable") {
+        params.stable = args.stable;
+    }
+    if explicit("progress") {
+        params.progress = args.progress;
+    }
+
+    // Validate the effective parameters.
+    if params.records_per_file < 1000 {
+        return Err("--records-per-file must be at least 1000".to_string());
+    }
+    if params.files_per_merge < 2 {
+        return Err("--files-per-merge must be at least 2".to_string());
+    }
+    if params.buffer_size < 1 {
+        return Err("--buffer-size must be positive".to_string());
+    }
 
     // Sort the GAF file.
     sort_gaf(&args.input, &output_file, &params)?;

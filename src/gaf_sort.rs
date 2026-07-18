@@ -267,9 +267,30 @@ impl SortParameters {
     /// Default for `buffer_size`.
     pub const DEFAULT_BUFFER_SIZE: usize = 1000;
 
+    /// Default `records_per_file` with the long read preset.
+    pub const LONG_READ_RECORDS_PER_FILE: usize = 10_000;
+
+    /// Available presets.
+    pub const PRESETS: [&'static str; 3] = [ "default", "short", "long" ];
+
     /// Returns a new `SortParameters` with default values.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Returns a new `SortParameters` with the given preset.
+    ///
+    /// Returns an error if the preset is unknown.
+    /// Available presets are [`Self::PRESETS`].
+    pub fn with_preset(preset: &str) -> Result<Self, String> {
+        match preset {
+            "default" | "short" => Ok(Self::default()),
+            "long" => Ok(Self {
+                records_per_file: Self::LONG_READ_RECORDS_PER_FILE,
+                ..Self::default()
+            }),
+            _ => Err(format!("Unknown preset: {}", preset)),
+        }
     }
 
     /// Validates the parameters and returns an error message if they are invalid.
