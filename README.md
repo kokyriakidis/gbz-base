@@ -1,6 +1,6 @@
 # GBZ and GAF in SQLite
 
-This is a prototype for SQLite-based file formats for:
+SQLite-based file formats for:
 
 * Pangenome graphs in [GBZ format](https://github.com/jltsiren/gbwtgraph/blob/master/SERIALIZATION.md).
 * Sequence alignments to a pangenome graph in [GAF format](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md).
@@ -19,11 +19,13 @@ cargo build --release
 
 You will then have the following binaries in `target/release/`:
 
-* `gbz2db`: Builds a GBZ-base.
-* `gaf2db`: Builds a GAF-base.
-* `db2gaf`: Converts GAF-base back to GAF.
-* `query`: Queries in GBZ-base and GAF-base.
-* `gafsort`: Sorts a GAF file for GAF-base construction.
+* `gbz-base`:
+  * `gbz-base construct` builds a GBZ-base (`gbz2db` until version 0.5.1).
+  * `gbz-base query` for querying GBZ-bases and GAf-bases (`query` until version 0.5.1).
+* `gaf-base`:
+  * `gaf-base sort` sorts a GAF file for GAF-base construction (`gafsort` until version 0.5.1).
+  * `gaf-base compress` builds a GAF-base (`gaf2db` until version 0.5.1).
+  * `gaf-base decompress` converts GAF-base back to GAF (`db2gaf` until version 0.5.1).
 
 ## GBZ-base construction
 
@@ -32,7 +34,7 @@ You will then have the following binaries in `target/release/`:
 You can convert a GBZ graph `graph.gbz` into a database `graph.gbz.db` using:
 
 ```sh
-gbz2db graph.gbz
+gbz-base construct graph.gbz
 ```
 
 The output file can be changed using `--output filename.db`.
@@ -46,7 +48,7 @@ Generic paths (with sample name `_gbwt_ref`) and reference paths (samples specif
 
 A GBZ-base stores links between the boundary nodes of snarls in top-level chains.
 Such links enable better subgraph queries (see below).
-By default, the `gbz2db` tries to find them using a simple algorithm that works with Minigraph–Cactus graphs.
+By default, the `gbz-base construct` tries to find them using a simple algorithm that works with Minigraph–Cactus graphs.
 It requires that each graph component contains exactly two tips with a directed path between them.
 
 If the assumptions fail, the algorithm will not be able to find top-level chains for some components.
@@ -59,7 +61,7 @@ Example with chains extracted from a distance index:
 
 ```sh
 vg chains graph.gbz graph.dist > graph.chains
-gbz2db --chains graph.chains graph.gbz
+gbz-base construct --chains graph.chains graph.gbz
 ```
 
 ## GAF-base construction
@@ -67,25 +69,26 @@ gbz2db --chains graph.chains graph.gbz
 ### Sorting the reads
 
 Before building a GAF-base, you must first sort the alignments and build a GBWT index of the target paths.
-This can be done using the bundled `gafsort` tool (or with `vg gamsort`):
+This can be done using `gaf-base sort` (or with `vg gamsort`):
 
 ```sh
-gafsort --progress --threads 6 reads.gaf.gz | bgzip --threads 4 > sorted.gaf.gz
+gaf-base sort --progress --threads 6 reads.gaf.gz | bgzip --threads 4 > sorted.gaf.gz
 ```
 
 `sorted.gaf.gz` now contains the sorted reads.
 Six worker threads and four compression threads should be sufficient due to sequential bottlenecks.
 
-The default chunk size (1 million lines) is appropriate for short reads.
-When sorting long reads, it can be changed with `--chunk-size N` (e.g. `--chunk-size 10k` for 20 kpb reads).
-Chunk size can be specified using suffixes such as `k` or `M`.
+The default temporary file size (1 million lines) is appropriate for short reads.
+You can get a more appropriate size (10 thousand lines) for long reads with `--preset long`.
+File size can be changed manually with `--records-per-file N` (e.g. `--records-per-file 10k` for 20 kpb reads).
+The size can be specified using suffixes such as `k` or `M`.
 
 ### Building the GAF-base
 
 GAF-base construction takes the sorted reads:
 
 ```sh
-gaf2db sorted.gaf.gz
+gaf-base compress sorted.gaf.gz
 ```
 
 The reads can be uncompressed or compressed with gzip.
@@ -96,7 +99,8 @@ A prebuilt GBWT index (e.g. from `vg gamsort`) can be provided with `--gbwt FILE
 This will lower the memory requirements for GAF-base construction, but it will not make the construction faster.
 
 The default block size (1000 alignments) is appropriate for short reads.
-When building a database of long read alignments, it can be changed with `--block-size N` (e.g. `--block-size 10` for 20 kbp reads).
+With long reads, you can use smaller blocks (10 alignments) with `--preset long`.
+Block size can be set manually with `--block-size N` (e.g. `--block-size 10` for 20 kbp reads).
 
 The default GAF-base is reference-based, like the GAF format itself.
 The alignments can only be decoded by using the corresponding GBZ graph or GBZ-base.
@@ -112,7 +116,7 @@ Similarly, optional fields not supported directly by GAF-base can be dropped wit
 
 ## Subgraph queries
 
-The `query` tool supports extracting subgraphs from a database or a GBZ graph.
+`gbz-base query` supports extracting subgraphs from a database or a GBZ graph.
 A database is available immediately, while loading a large graph into memory can take tens of seconds.
 On the other hand, large and/or repeated queries can be tens of times faster with an in-memory graph.
 
@@ -120,13 +124,13 @@ Basic usage:
 
 ```sh
 # Offset-based query.
-query --sample GRCh38 --contig chr12 --offset 1234567 graph.db > out.gfa
+gbz-base query --sample GRCh38 --contig chr12 --offset 1234567 graph.db > out.gfa
 
 # Interval-based query on a generic path.
-query --contig chrM --interval 3000..4000 graph.db > out.gfa
+gbz-base query --contig chrM --interval 3000..4000 graph.db > out.gfa
 
 # Node-based query.
-query --node 12345 graph.db > out.gfa
+gbz-base query --node 12345 graph.db > out.gfa
 ```
 
 Offsets are 0-based and intervals are half-open.
@@ -154,7 +158,7 @@ Snarl-based queries avoid these issues:
 
 ```sh
 # Snarl-based query.
-query --between 12345:12401 graph.db > out.gfa
+gbz-base query --between 12345:12401 graph.db > out.gfa
 ```
 
 The query specifies two boundary nodes, which are assumed to be in the same chain in the snarl decomposition.
@@ -171,7 +175,7 @@ If the limit is exceeded, the query will fail.
 Other queries can also be made snarl-aware:
 
 ```sh
-query --contig chrM --interval 3000..4000 --snarls graph.db > out.gfa
+gbz-base query --contig chrM --interval 3000..4000 --snarls graph.db > out.gfa
 ```
 
 After extracting a subgraph, the query extends it to cover all top-level snarls contained in the subgraph.
@@ -189,7 +193,7 @@ The extended subgraph can be much larger than the original one, if:
 We can also extend the subgraph with all overlapping snarls:
 
 ```sh
-query --contig chrM --interval 3000..4000 --extend-snarls graph.db > out.gfa
+gbz-base query --contig chrM --interval 3000..4000 --extend-snarls graph.db > out.gfa
 ```
 
 In this case, we also include partially overlapping snarls.
@@ -205,7 +209,7 @@ If the graph contains large snarls, the extended subgraph can be much larger tha
 If you have a GBZ-base for a graph and a GAF-base for reads aligned to the graph, you can extract the reads aligned to the subgraph:
 
 ```sh
-query --sample GRCh38 --contig chr12 --offset 1234567 \
+gbz-base query --sample GRCh38 --contig chr12 --offset 1234567 \
     --gaf-base reads.db --gaf-output out.gaf \
     graph.db > out.gfa
 ```
@@ -218,7 +222,7 @@ For example, a GBZ-base for a clipped (default) Minigraph–Cactus graph can be 
 
 ## Test data
 
-Directory `test_data` contains test data.
+Directory `test-data` contains test data.
 In particular, there is a subset of a HPRC release 1 graph also used as the [haplotype sampling test case](https://github.com/vgteam/vg/blob/master/test/haplotype-sampling/README.md) in vg.
 The test graph contains the following regions:
 
@@ -237,6 +241,8 @@ The relevant files are:
 See `cargo doc --open`.
 
 ## Building for WebAssembly
+
+**This section is probably outdated. We will update it once we have the time to continue working on a version of Sequence Tube Map backed with GBZ-base.**
 
 To build for a WASI WebAssembly runtime, run:
 
