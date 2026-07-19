@@ -6,10 +6,10 @@
   * `gbz-base construct` replaces `gbz2db`.
   * `gbz-base query` replaces `query`.
   * `gaf-base sort` replaces `gafsort`.
-  * `gaf-base compress` replaces `gaf2db`.
+  * `gaf-base construct` replaces `gaf2db`.
   * `gaf-base decompress` replaces `db2gaf`.
   * Old binaries are deprecated but still available.
-* Parameter presets for short and long reads in `gaf-base sort` and `gaf-base compress`.
+* Parameter presets for short and long reads in `gaf-base sort` and `gaf-base construct`.
 * Bug fixes:
   * `gaf-base decompress` works correctly with a reference-free GAF-base.
   * Multithreaded stable GAF sorting works correctly.

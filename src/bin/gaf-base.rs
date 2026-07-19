@@ -38,7 +38,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Build a GAF-base from sorted GAF alignments
-    Compress(CompressArgs),
+    Construct(ConstructArgs),
     /// Convert a GAF-base back to GAF
     Decompress(DecompressArgs),
     /// Sort a GAF file for GAF-base construction
@@ -49,10 +49,10 @@ fn main() -> Result<(), String> {
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).map_err(|e| e.to_string())?;
     match cli.command {
-        Commands::Compress(args) => {
-            // `subcommand_matches` is guaranteed to succeed, as we just parsed the `compress` subcommand.
-            let sub_matches = matches.subcommand_matches("compress").unwrap();
-            compress(args, sub_matches)
+        Commands::Construct(args) => {
+            // `subcommand_matches` is guaranteed to succeed, as we just parsed the `construct` subcommand.
+            let sub_matches = matches.subcommand_matches("construct").unwrap();
+            construct(args, sub_matches)
         },
         Commands::Decompress(args) => decompress(args),
         Commands::Sort(args) => {
@@ -68,7 +68,7 @@ fn parse_quantity(s: &str) -> Result<usize, String> {
     binaries::parse_unsigned(s).map_err(|x| x.to_string())
 }
 
-// Parameter preset shared by the `compress` and `sort` subcommands.
+// Parameter preset shared by the `construct` and `sort` subcommands.
 // The variants match the presets in `GAFBaseParams` and `SortParameters`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum Preset {
@@ -92,7 +92,7 @@ impl Preset {
 //-----------------------------------------------------------------------------
 
 #[derive(Args)]
-struct CompressArgs {
+struct ConstructArgs {
     /// GAF alignment file (may be gzip-compressed)
     #[arg(value_name = "alignments.gaf[.gz]")]
     gaf: PathBuf,
@@ -130,7 +130,7 @@ struct CompressArgs {
     overwrite: bool,
 }
 
-fn compress(args: CompressArgs, matches: &clap::ArgMatches) -> Result<(), String> {
+fn construct(args: ConstructArgs, matches: &clap::ArgMatches) -> Result<(), String> {
     let start_time = Instant::now();
 
     // Start from the preset and let each option override it only if the user passed

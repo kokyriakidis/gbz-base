@@ -467,18 +467,18 @@ fn gaf_base_sort_presets() {
 
 //-----------------------------------------------------------------------------
 
-// Tests for `gaf-base compress`.
+// Tests for `gaf-base construct`.
 // NOTE: micb-kir3dl1_HG003.gaf is already sorted with `vg gamsort`, which uses a slightly
 // different sort key than `gaf-base sort`. micb-kir3dl1_HG003.gbwt uses the same order.
 
 // We assume that the sorted input file is a temporary file if no output file is provided.
 // Otherwise there may be conflicts with multiple tests running in parallel.
-fn run_gaf_base_compress(
+fn run_gaf_base_construct(
     temp_files: &mut TempFileHandler,
     sorted_input: &PathBuf, gbwt_file: Option<&PathBuf>, graph_file: Option<&PathBuf>, output_file: Option<&PathBuf>,
     params: &GAFBaseParams, overwrite: bool
 ) -> (PathBuf, ExitStatus) {
-    let mut args = vec![String::from("compress")];
+    let mut args = vec![String::from("construct")];
     let output_file = match output_file {
         Some(path) => {
             args.push(String::from("--output"));
@@ -516,15 +516,15 @@ fn run_gaf_base_compress(
     let result = Command::new(binary)
         .args(&args)
         .output()
-        .expect("Failed to execute gaf-base compress");
+        .expect("Failed to execute gaf-base construct");
     (output_file, result.status)
 }
 
-fn run_gaf_base_compress_with_preset(
+fn run_gaf_base_construct_with_preset(
     sorted_input: &PathBuf, output_file: &PathBuf,
     preset: &str, other_args: &[String]
 ) {
-    let mut args = vec![String::from("compress")];
+    let mut args = vec![String::from("construct")];
     args.push(String::from("--preset"));
     args.push(preset.to_string());
     args.push(String::from("--output"));
@@ -536,12 +536,12 @@ fn run_gaf_base_compress_with_preset(
     let result = Command::new(binary)
         .args(&args)
         .output()
-        .expect("Failed to execute gaf-base compress");
-    assert!(result.status.success(), "gaf-base compress with preset {} and args {:?} failed with status: {}", preset, other_args, result.status);
+        .expect("Failed to execute gaf-base construct");
+    assert!(result.status.success(), "gaf-base construct with preset {} and args {:?} failed with status: {}", preset, other_args, result.status);
 }
 
 #[test]
-fn gaf_base_compress() {
+fn gaf_base_construct() {
     // In this test, we also check that we can build GAF-base from the output of
     // `gaf-base sort`. Other tests start from a pre-sorted GAF file.
     let mut temp_files = TempFileHandler::new();
@@ -551,30 +551,30 @@ fn gaf_base_compress() {
     let graph_file = None;
     let params = GAFBaseParams::default();
 
-    // We expect that the GAF-base built with `gaf-base compress` is identical to
+    // We expect that the GAF-base built with `gaf-base construct` is identical to
     // one built with a direct library call.
     let truth_file = build_gaf_base_truth(
         &mut temp_files, &sorted_input, None, None, &GAFBaseParams::default()
     );
-    let (output_file, status) = run_gaf_base_compress(
+    let (output_file, status) = run_gaf_base_construct(
         &mut temp_files, &sorted_input, gbwt_file, graph_file, None, &params, false
     );
-    assert!(status.success(), "gaf-base compress failed with status: {}", status);
+    assert!(status.success(), "gaf-base construct failed with status: {}", status);
     assert!(compare_files(&output_file, &truth_file), "Output file does not match truth file");
     let output_metadata = fs::metadata(&output_file).expect("Failed to read output file metadata");
     let old_timestamp = output_metadata.modified().expect("Failed to get output file timestamp");
 
     // Try rebuilding the database without overwrite, expect failure.
-    let (_, status) = run_gaf_base_compress(
+    let (_, status) = run_gaf_base_construct(
         &mut temp_files, &sorted_input, gbwt_file, graph_file, None, &params, false
     );
-    assert!(!status.success(), "gaf-base compress should have failed without overwrite");
+    assert!(!status.success(), "gaf-base construct should have failed without overwrite");
 
     // Rebuild with overwrite, expect success.
-    let (output_file, status) = run_gaf_base_compress(
+    let (output_file, status) = run_gaf_base_construct(
         &mut temp_files, &sorted_input, gbwt_file, graph_file, None, &params, true
     );
-    assert!(status.success(), "gaf-base compress failed with overwrite with status: {}", status);
+    assert!(status.success(), "gaf-base construct failed with overwrite with status: {}", status);
 
     // Check that we did actually overwrite the output file.
     let output_metadata = fs::metadata(&output_file).expect("Failed to read output file metadata");
@@ -584,27 +584,27 @@ fn gaf_base_compress() {
 
     // Check that the default parameters correspond to the default arguments.
     let input_copy = temp_files.create_copy(&sorted_input);
-    let default_args = vec![String::from("compress"), input_copy.to_str().unwrap().to_string()];
+    let default_args = vec![String::from("construct"), input_copy.to_str().unwrap().to_string()];
     let binary = get_binary_path("gaf-base");
     let default_output = Command::new(&binary)
         .args(&default_args)
         .output()
-        .expect("Failed to execute gaf-base compress with default args");
-    assert!(default_output.status.success(), "gaf-base compress failed with default args");
+        .expect("Failed to execute gaf-base construct with default args");
+    assert!(default_output.status.success(), "gaf-base construct failed with default args");
     let correct_output = compare_files(&output_file, &truth_file);
-    assert!(correct_output, "gaf-base compress produced incorrect output with default args");
+    assert!(correct_output, "gaf-base construct produced incorrect output with default args");
 
     // Try specifying an explicit output file name.
     let explicit_output_file = temp_files.new_file("gaf-base-output");
-    let (_, status) = run_gaf_base_compress(
+    let (_, status) = run_gaf_base_construct(
         &mut temp_files, &sorted_input, gbwt_file, graph_file, Some(&explicit_output_file), &params, false
     );
-    assert!(status.success(), "gaf-base compress failed with explicit output file with status: {}", status);
+    assert!(status.success(), "gaf-base construct failed with explicit output file with status: {}", status);
     assert!(compare_files(&explicit_output_file, &truth_file), "Explicit output file does not match truth file");
 }
 
 #[test]
-fn gaf_base_compress_ref_free() {
+fn gaf_base_construct_ref_free() {
     let mut temp_files = TempFileHandler::new();
     let sorted_input = utils::get_test_data("micb-kir3dl1_HG003.gaf");
     let gbwt_file = None;
@@ -615,15 +615,15 @@ fn gaf_base_compress_ref_free() {
         &mut temp_files, &sorted_input, gbwt_file, Some(&graph_file), &params
     );
     let output_file = temp_files.new_file("gaf-base");
-    let (_, status) = run_gaf_base_compress(
+    let (_, status) = run_gaf_base_construct(
         &mut temp_files, &sorted_input, gbwt_file, Some(&graph_file), Some(&output_file), &params, false
     );
-    assert!(status.success(), "gaf-base compress ref-free failed with status: {}", status);
+    assert!(status.success(), "gaf-base construct ref-free failed with status: {}", status);
     assert!(compare_files(&output_file, &truth_file), "Output file does not match truth file");
 }
 
 #[test]
-fn gaf_base_compress_with_gbwt() {
+fn gaf_base_construct_with_gbwt() {
     let mut temp_files = TempFileHandler::new();
     let sorted_input = utils::get_test_data("micb-kir3dl1_HG003.gaf");
     let gbwt_file = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
@@ -634,15 +634,15 @@ fn gaf_base_compress_with_gbwt() {
         &mut temp_files, &sorted_input, Some(&gbwt_file), graph_file, &params
     );
     let output_file = temp_files.new_file("gaf-base");
-    let (_, status) = run_gaf_base_compress(
+    let (_, status) = run_gaf_base_construct(
         &mut temp_files, &sorted_input, Some(&gbwt_file), graph_file, Some(&output_file), &params, false
     );
-    assert!(status.success(), "gaf-base compress with GBWT failed with status: {}", status);
+    assert!(status.success(), "gaf-base construct with GBWT failed with status: {}", status);
     assert!(compare_files(&output_file, &truth_file), "Output file does not match truth file");
 }
 
 #[test]
-fn gaf_base_compress_no_quality() {
+fn gaf_base_construct_no_quality() {
     let mut temp_files = TempFileHandler::new();
     let sorted_input = utils::get_test_data("micb-kir3dl1_HG003.gaf");
     let gbwt_file = None;
@@ -653,15 +653,15 @@ fn gaf_base_compress_no_quality() {
         &mut temp_files, &sorted_input, gbwt_file, graph_file, &params
     );
     let output_file = temp_files.new_file("gaf-base");
-    let (_, status) = run_gaf_base_compress(
+    let (_, status) = run_gaf_base_construct(
         &mut temp_files, &sorted_input, gbwt_file, graph_file, Some(&output_file), &params, false
     );
-    assert!(status.success(), "gaf-base compress no quality failed with status: {}", status);
+    assert!(status.success(), "gaf-base construct no quality failed with status: {}", status);
     assert!(compare_files(&output_file, &truth_file), "Output file does not match truth file");
 }
 
 #[test]
-fn gaf_base_compress_no_optional() {
+fn gaf_base_construct_no_optional() {
     let mut temp_files = TempFileHandler::new();
     let sorted_input = utils::get_test_data("micb-kir3dl1_HG003.gaf");
     let gbwt_file = None;
@@ -672,15 +672,15 @@ fn gaf_base_compress_no_optional() {
         &mut temp_files, &sorted_input, gbwt_file, graph_file, &params
     );
     let output_file = temp_files.new_file("gaf-base");
-    let (_, status) = run_gaf_base_compress(
+    let (_, status) = run_gaf_base_construct(
         &mut temp_files, &sorted_input, gbwt_file, graph_file, Some(&output_file), &params, false
     );
-    assert!(status.success(), "gaf-base compress no optional failed with status: {}", status);
+    assert!(status.success(), "gaf-base construct no optional failed with status: {}", status);
     assert!(compare_files(&output_file, &truth_file), "Output file does not match truth file");
 }
 
 #[test]
-fn gaf_base_compress_block_sizes() {
+fn gaf_base_construct_block_sizes() {
     let mut temp_files = TempFileHandler::new();
     let sorted_input = utils::get_test_data("micb-kir3dl1_HG003.gaf");
     let gbwt_file = None;
@@ -693,16 +693,16 @@ fn gaf_base_compress_block_sizes() {
             &mut temp_files, &sorted_input, gbwt_file, graph_file, &params
         );
         let output_file = temp_files.new_file("gaf-base");
-        let (_, status) = run_gaf_base_compress(
+        let (_, status) = run_gaf_base_construct(
             &mut temp_files, &sorted_input, gbwt_file, graph_file, Some(&output_file), &params, false
         );
-        assert!(status.success(), "gaf-base compress with block size {} failed with status: {}", block_size, status);
+        assert!(status.success(), "gaf-base construct with block size {} failed with status: {}", block_size, status);
         assert!(compare_files(&output_file, &truth_file), "Output file does not match truth file for block size {}", block_size);
     }
 }
 
 #[test]
-fn gaf_base_compress_presets() {
+fn gaf_base_construct_presets() {
     let mut temp_files = TempFileHandler::new();
     let sorted_input = utils::get_test_data("micb-kir3dl1_HG003.gaf");
     let gbwt_file = None;
@@ -715,7 +715,7 @@ fn gaf_base_compress_presets() {
             &mut temp_files, &sorted_input, gbwt_file, graph_file, &params
         );
         let output_file = temp_files.new_file("gaf-base");
-        run_gaf_base_compress_with_preset(&sorted_input, &output_file, preset, &[]);
+        run_gaf_base_construct_with_preset(&sorted_input, &output_file, preset, &[]);
         assert!(compare_files(&output_file, &truth_file), "Output file does not match truth file for preset {}", preset);
 
         // Then we try overriding something in the preset.
@@ -725,7 +725,7 @@ fn gaf_base_compress_presets() {
         );
         let output_file = temp_files.new_file("gaf-base");
         let other_args = vec![String::from("--block-size"), params.block_size.to_string()];
-        run_gaf_base_compress_with_preset(&sorted_input, &output_file, preset, &other_args);
+        run_gaf_base_construct_with_preset(&sorted_input, &output_file, preset, &other_args);
         assert!(compare_files(&output_file, &truth_file), "Output file does not match truth file for preset {} with override", preset);
     }
 }

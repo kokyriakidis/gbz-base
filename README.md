@@ -24,7 +24,7 @@ You will then have the following binaries in `target/release/`:
   * `gbz-base query` for querying GBZ-bases and GAf-bases (`query` until version 0.5.1).
 * `gaf-base`:
   * `gaf-base sort` sorts a GAF file for GAF-base construction (`gafsort` until version 0.5.1).
-  * `gaf-base compress` builds a GAF-base (`gaf2db` until version 0.5.1).
+  * `gaf-base construct` builds a GAF-base (`gaf2db` until version 0.5.1).
   * `gaf-base decompress` converts GAF-base back to GAF (`db2gaf` until version 0.5.1).
 
 ## GBZ-base construction
@@ -88,7 +88,7 @@ The size can be specified using suffixes such as `k` or `M`.
 GAF-base construction takes the sorted reads:
 
 ```sh
-gaf-base compress sorted.gaf.gz
+gaf-base construct sorted.gaf.gz
 ```
 
 The reads can be uncompressed or compressed with gzip.
