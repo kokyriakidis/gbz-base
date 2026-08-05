@@ -1,6 +1,7 @@
 //! GBZ-base and GAF-base: SQLite databases storing a GBZ graph and sequence alignments to the graph.
 
 use crate::{Alignment, AlignmentBlock};
+use crate::error::{Error, Result};
 use crate::formats::{self, JSONValue};
 use crate::utils::{self, PathStartSource};
 
@@ -112,18 +113,24 @@ impl GBZBase {
 
     /// Opens a connection to the database in the given file.
     ///
-    /// Reads the header information and passes through any database errors.
-    pub fn open<P: AsRef<Path>>(filename: P) -> Result<Self, String> {
+    /// Reads the header information.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported) error if the database is of an unsupported version.
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the stored header information is corrupt.
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
+    pub fn open<P: AsRef<Path>>(filename: P) -> Result<Self> {
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let connection = Connection::open_with_flags(filename, flags).map_err(|x| x.to_string())?;
+        let connection = Connection::open_with_flags(filename, flags)?;
 
         // Get some header information.
         let mut get_tag = connection.prepare(
             "SELECT value FROM Tags WHERE key = ?1"
-        ).map_err(|x| x.to_string())?;
+        )?;
         let version = get_string_value(&mut get_tag, Self::KEY_VERSION)?;
         if version != Self::VERSION {
-            return Err(format!("Unsupported database version: {} (expected {})", version, Self::VERSION));
+            return Err(Error::unsupported(format!("Unsupported database version: {} (expected {})", version, Self::VERSION)));
         }
         let nodes = get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
         let chains = get_numeric_value(&mut get_tag, Self::KEY_CHAINS)?;
@@ -210,14 +217,15 @@ impl GBZBase {
     ///
     /// # Errors
     ///
-    /// Returns an error if the database already exists or if the GBZ graph does not contain sufficient metadata.
-    /// Passes through any database errors.
-    pub fn create_from_files(gbz_file: &Path, chains_file: Option<&Path>, db_file: &Path) -> Result<(), String> {
+    /// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error if the database already exists.
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the GBZ graph does not contain sufficient metadata.
+    /// Passes through any [`ErrorKind::Io`](crate::ErrorKind::Io) and [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
+    pub fn create_from_files(gbz_file: &Path, chains_file: Option<&Path>, db_file: &Path) -> Result<()> {
         eprintln!("Loading GBZ graph {}", gbz_file.display());
-        let graph: GBZ = serialize::load_from(gbz_file).map_err(|x| x.to_string())?;
+        let graph: GBZ = serialize::load_from(gbz_file)?;
         let chains = if let Some(filename) = chains_file {
             eprintln!("Loading top-level chain file {}", filename.display());
-            serialize::load_from(filename).map_err(|x| x.to_string())?
+            serialize::load_from(filename)?
         } else {
             eprintln!("Finding top-level chains in the graph");
             let chains = algorithms::find_chains(&graph);
@@ -237,19 +245,19 @@ impl GBZBase {
     }
 
     // Sanity checks for the GBZ graph. We do not want to handle graphs without sufficient metadata.
-    fn sanity_checks(graph: &GBZ) -> Result<(), String> {
+    fn sanity_checks(graph: &GBZ) -> Result<()> {
         let metadata = graph.metadata().ok_or_else(||
-            String::from("The graph does not contain metadata")
+            Error::invalid_data("The graph does not contain metadata")
         )?;
 
         if !metadata.has_path_names() {
-            return Err("The metadata does not contain path names".to_string());
+            return Err(Error::invalid_data("The metadata does not contain path names"));
         }
         if !metadata.has_sample_names() {
-            return Err("The metadata does not contain sample names".to_string());
+            return Err(Error::invalid_data("The metadata does not contain sample names"));
         }
         if !metadata.has_contig_names() {
-            return Err("The metadata does not contain contig names".to_string());
+            return Err(Error::invalid_data("The metadata does not contain contig names"));
         }
 
         Ok(())
@@ -265,20 +273,21 @@ impl GBZBase {
     ///
     /// # Errors
     ///
-    /// Returns an error if the database already exists or if the GBZ graph does not contain sufficient metadata.
-    /// Passes through any database errors.
-    pub fn create<P: AsRef<Path>>(graph: &GBZ, chains: &Chains, filename: P) -> Result<(), String> {
+    /// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error if the database already exists.
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the GBZ graph does not contain sufficient metadata.
+    /// Passes through any [`ErrorKind::Io`](crate::ErrorKind::Io) and [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
+    pub fn create<P: AsRef<Path>>(graph: &GBZ, chains: &Chains, filename: P) -> Result<()> {
         eprintln!("Creating database {}", filename.as_ref().display());
         if binaries::file_exists(&filename) {
-            return Err(format!("Database {} already exists", filename.as_ref().display()));
+            return Err(Error::invalid_query(format!("Database {} already exists", filename.as_ref().display())));
         }
         Self::sanity_checks(graph)?;
 
-        let mut connection = Connection::open(filename).map_err(|x| x.to_string())?;
-        Self::insert_tags(graph, chains, &mut connection).map_err(|x| x.to_string())?;
-        Self::insert_nodes(graph, chains, &mut connection).map_err(|x| x.to_string())?;
-        Self::insert_paths(graph, &mut connection).map_err(|x| x.to_string())?;
-        Self::index_reference_paths(graph, &mut connection).map_err(|x| x.to_string())?;
+        let mut connection = Connection::open(filename)?;
+        Self::insert_tags(graph, chains, &mut connection)?;
+        Self::insert_nodes(graph, chains, &mut connection)?;
+        Self::insert_paths(graph, &mut connection)?;
+        Self::index_reference_paths(graph, &mut connection)?;
         Ok(())
     }
 
@@ -555,36 +564,42 @@ impl GAFBase {
         tags.get(key).cloned().unwrap_or_default()
     }
 
-    fn get_numeric_value(tags: &Tags, key: &str) -> Result<usize, String> {
+    fn get_numeric_value(tags: &Tags, key: &str) -> Result<usize> {
         let value = Self::get_string_value(tags, key);
-        value.parse::<usize>().map_err(|x| format!("Invalid numeric value for key {}: {}", key, x))
+        value.parse::<usize>().map_err(|x| Error::invalid_data(format!("Invalid numeric value for key {}: {}", key, x)))
     }
 
-    fn get_boolean_value(tags: &Tags, key: &str) -> Result<bool, String> {
+    fn get_boolean_value(tags: &Tags, key: &str) -> Result<bool> {
         let value = Self::get_numeric_value(tags, key)?;
         match value {
             0 => Ok(false),
             1 => Ok(true),
-            _ => Err(format!("Invalid boolean value for key {}: {}", key, value)),
+            _ => Err(Error::invalid_data(format!("Invalid boolean value for key {}: {}", key, value))),
         }
     }
 
     /// Opens a connection to the database in the given file.
     ///
-    /// Reads the header information and passes through any database errors.
-    pub fn open<P: AsRef<Path>>(filename: P) -> Result<Self, String> {
+    /// Reads the header information.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported) error if the database is of an unsupported version.
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the stored header information is corrupt.
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
+    pub fn open<P: AsRef<Path>>(filename: P) -> Result<Self> {
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let connection = Connection::open_with_flags(filename, flags).map_err(|x| x.to_string())?;
+        let connection = Connection::open_with_flags(filename, flags)?;
 
         // Read all tags from the database.
         let mut get_tags = connection.prepare(
             "SELECT key, value FROM Tags"
-        ).map_err(|x| x.to_string())?;
+        )?;
         let mut tags = Tags::new();
-        let mut rows = get_tags.query(()).map_err(|x| x.to_string())?;
-        while let Some(row) = rows.next().map_err(|x| x.to_string())? {
-            let key: String = row.get(0).map_err(|x| x.to_string())?;
-            let value: String = row.get(1).map_err(|x| x.to_string())?;
+        let mut rows = get_tags.query(())?;
+        while let Some(row) = rows.next()? {
+            let key: String = row.get(0)?;
+            let value: String = row.get(1)?;
             tags.insert(&key, &value);
         }
         drop(rows);
@@ -592,7 +607,7 @@ impl GAFBase {
 
         let version = Self::get_string_value(&tags, Self::KEY_VERSION);
         if version != Self::VERSION {
-            return Err(format!("Unsupported database version: {} (expected {})", version, Self::VERSION));
+            return Err(Error::unsupported(format!("Unsupported database version: {} (expected {})", version, Self::VERSION)));
         }
         let nodes = Self::get_numeric_value(&tags, Self::KEY_NODES)?;
         let alignments = Self::get_numeric_value(&tags, Self::KEY_ALIGNMENTS)?;
@@ -601,10 +616,10 @@ impl GAFBase {
         // Also determine the number of rows in the Alignments table.
         let mut count_rows = connection.prepare(
             "SELECT COUNT(*) FROM Alignments"
-        ).map_err(|x| x.to_string())?;
+        )?;
         let blocks = count_rows.query_row((), |row|
             row.get::<_, usize>(0)
-        ).map_err(|x| x.to_string())?;
+        )?;
         drop(count_rows);
 
         Ok(GAFBase {
@@ -663,8 +678,8 @@ impl GAFBase {
     /// Returns the stable graph name (pggname) for the graph used as the reference for the alignments.
     ///
     /// Returns an error if the tags cannot be parsed.
-    pub fn graph_name(&self) -> Result<GraphName, String> {
-        GraphName::from_tags(self.tags())
+    pub fn graph_name(&self) -> Result<GraphName> {
+        GraphName::from_tags(self.tags()).map_err(Error::invalid_data)
     }
 }
 
@@ -757,14 +772,14 @@ impl GAFBaseParams {
     ///
     /// Returns an error if the preset is unknown.
     /// Available presets are [`Self::PRESETS`].
-    pub fn with_preset(preset: &str) -> Result<Self, String> {
+    pub fn with_preset(preset: &str) -> Result<Self> {
         match preset {
             "default" | "short" => Ok(Self::default()),
             "long" => Ok(Self {
                 block_size: Self::LONG_READ_BLOCK_SIZE,
                 ..Self::default()
             }),
-            _ => Err(format!("Unknown preset: {}", preset)),
+            _ => Err(Error::invalid_query(format!("Unknown preset: {}", preset))),
         }
     }
 
@@ -828,22 +843,19 @@ impl GAFBase {
     ///
     /// # Errors
     ///
-    /// Returns an error, if:
-    ///
-    /// * The GAF file does not exist.
-    /// * The database already exists.
-    /// * Trying to build a reference-free GAF-base without a graph.
-    /// * The graph is not a valid reference for the alignments.
-    ///
-    /// Passes through any I/O, database, and construction errors.
+    /// Returns an [`ErrorKind::Io`](crate::ErrorKind::Io) error if the GAF file cannot be opened.
+    /// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error if the database already exists, if trying to build a reference-free
+    /// GAF-base without a graph, or if the graph is not a valid reference for the alignments.
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the GAF file cannot be parsed.
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     pub fn create_from_files(
         gaf_file: &Path, gbwt_file: Option<&Path>, db_file: &Path,
         graph: GraphReference<'_, '_>,
         params: &GAFBaseParams
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         if let Some(gbwt_file) = gbwt_file {
             eprintln!("Loading GBWT index {}", gbwt_file.display());
-            let index: Arc<GBWT> = Arc::new(serialize::load_from(gbwt_file).map_err(|x| x.to_string())?);
+            let index: Arc<GBWT> = Arc::new(serialize::load_from(gbwt_file)?);
             Self::create(gaf_file, Some(index), db_file, graph, params)
         } else {
             Self::create(gaf_file, None, db_file, graph, params)
@@ -869,29 +881,26 @@ impl GAFBase {
     ///
     /// # Errors
     ///
-    /// Returns an error, if:
-    ///
-    /// * The GAF file does not exist.
-    /// * The database already exists.
-    /// * Trying to build a reference-free GAF-base without a graph.
-    /// * The graph is not a valid reference for the alignments.
-    ///
-    /// Passes through any I/O, database, and construction errors.
+    /// Returns an [`ErrorKind::Io`](crate::ErrorKind::Io) error if the GAF file cannot be opened.
+    /// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error if the database already exists, if trying to build a reference-free
+    /// GAF-base without a graph, or if the graph is not a valid reference for the alignments.
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the GAF file cannot be parsed.
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(
         gaf_file: P, index: Option<Arc<GBWT>>, db_file: Q,
         graph: GraphReference<'_, '_>,
         params: &GAFBaseParams
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         eprintln!("Creating database {}", db_file.as_ref().display());
         if binaries::file_exists(&db_file) {
-            return Err(format!("Database {} already exists", db_file.as_ref().display()));
+            return Err(Error::invalid_query(format!("Database {} already exists", db_file.as_ref().display())));
         }
 
         // We will only use the graph if we actually need it.
         let mut graph = graph;
         if params.reference_free {
             if graph.is_none() {
-                return Err(String::from("The construction of a reference-free GAF-base requires a graph"));
+                return Err(Error::invalid_query("The construction of a reference-free GAF-base requires a graph"));
             }
         } else {
             graph = GraphReference::None;
@@ -904,16 +913,16 @@ impl GAFBase {
         utils::require_valid_reference(&aln_name, &graph_name)?;
 
         // `insert_alignments` consumes the connection, as it is moved to another thread.
-        let connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
+        let connection = Connection::open(&db_file)?;
         let built_index = Self::insert_alignments(index.clone(), gaf_file, connection, params)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or_else(|| String::from("unknown")));
         let actual_index = match (&index, &built_index) {
             (Some(index), None) => index.as_ref(),
             (None, Some(index)) => index,
-            _ => return Err(String::from("Logic error in GBWT handling")),
+            _ => return Err(Error::internal("Logic error in GBWT handling")),
         };
 
-        let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
+        let mut connection = Connection::open(&db_file)?;
         let nodes = Self::insert_nodes(actual_index, graph, &mut connection)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or_else(|| String::from("unknown")));
 
@@ -923,8 +932,8 @@ impl GAFBase {
         Ok(())
     }
 
-    fn parse_gaf_headers(gaf_file: &mut impl BufRead) -> Result<GraphName, String> {
-        let header_lines = formats::read_gaf_header_lines(gaf_file).map_err(|x| x.to_string())?;
+    fn parse_gaf_headers(gaf_file: &mut impl BufRead) -> Result<GraphName> {
+        let header_lines = formats::read_gaf_header_lines(gaf_file)?;
         Ok(GraphName::from_header_lines(&header_lines).unwrap_or_default())
     }
 
@@ -934,7 +943,7 @@ impl GAFBase {
     }
 
     // We also include tags parsed from GAF headers.
-    fn insert_tags(index: &GBWT, nodes: usize, aln_name: &GraphName, connection: &mut Connection, params: &GAFBaseParams) -> Result<(), String> {
+    fn insert_tags(index: &GBWT, nodes: usize, aln_name: &GraphName, connection: &mut Connection, params: &GAFBaseParams) -> Result<()> {
         eprintln!("Inserting header and tags");
 
         // Create the tags table.
@@ -944,7 +953,7 @@ impl GAFBase {
                 value TEXT NOT NULL
             ) STRICT",
             (),
-        ).map_err(|x| x.to_string())?;
+        )?;
 
         // We currently only care about tags related to stable graph names.
         let mut additional_tags = Tags::new();
@@ -952,27 +961,27 @@ impl GAFBase {
 
         // Insert header and selected tags.
         let mut inserted = 0;
-        let transaction = connection.transaction().map_err(|x| x.to_string())?;
+        let transaction = connection.transaction()?;
         {
             let mut insert = transaction.prepare(
                 "INSERT INTO Tags(key, value) VALUES (?1, ?2)"
-            ).map_err(|x| x.to_string())?;
+            )?;
 
             let alignments = Self::gbwt_paths(index);
-            insert.execute((Self::KEY_VERSION, Self::VERSION)).map_err(|x| x.to_string())?;
-            insert.execute((Self::KEY_NODES, nodes)).map_err(|x| x.to_string())?;
-            insert.execute((Self::KEY_ALIGNMENTS, alignments)).map_err(|x| x.to_string())?;
+            insert.execute((Self::KEY_VERSION, Self::VERSION))?;
+            insert.execute((Self::KEY_NODES, nodes))?;
+            insert.execute((Self::KEY_ALIGNMENTS, alignments))?;
             let bidirectional: usize = if index.is_bidirectional() { 1 } else { 0 };
-            insert.execute((Self::KEY_BIDIRECTIONAL_GBWT, bidirectional)).map_err(|x| x.to_string())?;
-            insert.execute((Self::KEY_PARAMS, params.to_json())).map_err(|x| x.to_string())?;
+            insert.execute((Self::KEY_BIDIRECTIONAL_GBWT, bidirectional))?;
+            insert.execute((Self::KEY_PARAMS, params.to_json()))?;
             inserted += 5;
 
             for (key, value) in additional_tags.iter() {
-                insert.execute((key, value)).map_err(|x| x.to_string())?;
+                insert.execute((key, value))?;
                 inserted += 1;
             }
         }
-        transaction.commit().map_err(|x| x.to_string())?;
+        transaction.commit()?;
 
         eprintln!("Inserted {} key-value pairs", inserted);
 
@@ -980,7 +989,7 @@ impl GAFBase {
     }
 
     // Returns the number of nodes in the graph.
-    fn insert_nodes(index: &GBWT, graph: GraphReference<'_, '_>, connection: &mut Connection) -> Result<usize, String> {
+    fn insert_nodes(index: &GBWT, graph: GraphReference<'_, '_>, connection: &mut Connection) -> Result<usize> {
         eprintln!("Inserting nodes");
 
         // Create the nodes table.
@@ -994,16 +1003,16 @@ impl GAFBase {
                 sequence BLOB NOT NULL
             ) STRICT",
             (),
-        ).map_err(|x| x.to_string())?;
+        )?;
 
         // Insert the nodes.
         let mut inserted = 0;
         let mut graph = graph;
-        let transaction = connection.transaction().map_err(|x| x.to_string())?;
+        let transaction = connection.transaction()?;
         {
             let mut insert = transaction.prepare(
                 "INSERT INTO Nodes(handle, edges, bwt, sequence) VALUES (?1, ?2, ?3, ?4)"
-            ).map_err(|x| x.to_string())?;
+            )?;
             let bwt: &BWT = index.as_ref();
             for record_id in bwt.id_iter() {
                 if record_id == gbz::ENDMARKER {
@@ -1017,11 +1026,11 @@ impl GAFBase {
                     let record = graph.gbz_record(handle)?;
                     utils::encode_sequence(record.sequence())
                 };
-                insert.execute((handle, edge_bytes, bwt_bytes, sequence)).map_err(|x| x.to_string())?;
+                insert.execute((handle, edge_bytes, bwt_bytes, sequence))?;
                 inserted += 1;
             }
         }
-        transaction.commit().map_err(|x| x.to_string())?;
+        transaction.commit()?;
 
         eprintln!("Inserted {} node records", inserted);
         Ok(inserted / 2)
@@ -1033,7 +1042,7 @@ impl GAFBase {
         gaf_file: Box<dyn BufRead>,
         connection: Connection,
         params: &GAFBaseParams
-    ) -> Result<Option<GBWT>, String> {
+    ) -> Result<Option<GBWT>> {
         eprintln!("Inserting alignments");
         let mut gaf_file = gaf_file;
         let mut connection = connection;
@@ -1056,7 +1065,7 @@ impl GAFBase {
                 optional BLOB NOT NULL
             ) STRICT",
             (),
-        ).map_err(|x| x.to_string())?;
+        )?;
 
         // TODO: Use rtree?
         // Create indexes for min/max nodes.
@@ -1064,7 +1073,7 @@ impl GAFBase {
             "CREATE INDEX AlignmentNodeInterval
                 ON Alignments(min_handle, max_handle)",
             (),
-        ).map_err(|x| x.to_string())?;
+        )?;
 
         // The main thread parses the GAF file and sends blocks of alignments to an encoder thread.
         // That thread sends the encoded blocks to a third thread that inserts them into the database.
@@ -1087,7 +1096,7 @@ impl GAFBase {
             };
             loop {
                 // This can only fail if the sender is disconnected.
-                let block: Result<Vec<Alignment>, String> = from_parser.recv().unwrap();
+                let block: Result<Vec<Alignment>> = from_parser.recv().unwrap();
                 match block {
                     Ok(block) => {
                         let encoded = AlignmentBlock::new(&block, &mut source, alignment_id);
@@ -1119,7 +1128,7 @@ impl GAFBase {
 
         // Insertion thread.
         let insert_thread = thread::spawn(move || {
-            let transaction = connection.transaction().map_err(|x| x.to_string());
+            let transaction = connection.transaction().map_err(Error::database);
             if let Err(message) = transaction {
                 let _ = to_report.send(Err(message));
                 return;
@@ -1130,7 +1139,7 @@ impl GAFBase {
                 "INSERT INTO
                     Alignments(min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers, optional)
                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
-            ).map_err(|x| x.to_string());
+            ).map_err(Error::database);
             if let Err(message) = insert {
                 let _ = to_report.send(Err(message));
                 return;
@@ -1140,7 +1149,7 @@ impl GAFBase {
             let mut statistics = AlignmentStats::new();
             loop {
                 // This can only fail if the sender is disconnected.
-                let block: Result<AlignmentBlock, String> = from_encoder.recv().unwrap();
+                let block: Result<AlignmentBlock> = from_encoder.recv().unwrap();
                 match block {
                     Ok(block) => {
                         if block.is_empty() {
@@ -1153,7 +1162,7 @@ impl GAFBase {
                             block.gbwt_starts, block.names,
                             block.quality_strings, block.difference_strings,
                             block.flags.as_ref(), block.numbers, block.optional
-                        )).map_err(|x| x.to_string());
+                        )).map_err(Error::database);
                         if let Err(message) = result {
                             let _ = to_report.send(Err(message));
                             return;
@@ -1167,7 +1176,7 @@ impl GAFBase {
             }
 
             drop(insert);
-            let result = transaction.commit().map_err(|x| x.to_string());
+            let result = transaction.commit().map_err(Error::database);
             if let Err(message) = result {
                 let _ = to_report.send(Err(message));
                 return;
@@ -1190,7 +1199,7 @@ impl GAFBase {
         };
         loop {
             let mut buf: Vec<u8> = Vec::new();
-            let len = gaf_file.read_until(b'\n', &mut buf).map_err(|x| x.to_string());
+            let len = gaf_file.read_until(b'\n', &mut buf).map_err(Error::io);
             match len {
                 Ok(len) => {
                     if len == 0 {
@@ -1210,13 +1219,13 @@ impl GAFBase {
                 continue;
             }
             let aln = Alignment::from_gaf(&buf).map_err(
-                |x| format!("Failed to parse the alignment on line {}: {}", line_num, x)
+                |x| Error::invalid_data(format!("Failed to parse the alignment on line {}: {}", line_num, x))
             );
             match aln {
                 Ok(aln) => {
                     if let Some(builder) = &mut builder
                         && let Err(msg) = builder.insert(aln.target_path().unwrap(), None) {
-                        let _ = to_encoder.send(Err(msg));
+                        let _ = to_encoder.send(Err(Error::invalid_data(msg)));
                         failed = true;
                         break;
                     }
@@ -1292,7 +1301,7 @@ impl GAFBase {
         // Finally build the GBWT index.
         if let Some(builder) = builder {
             eprintln!("Finishing GBWT construction");
-            let index = builder.build()?;
+            let index = builder.build().map_err(Error::invalid_data)?;
             eprintln!("GBWT index: {} sequences of total length {}", index.sequences(), index.len());
             Ok(Some(index))
         } else {
@@ -1590,41 +1599,41 @@ pub struct GraphInterface<'a> {
 impl<'a> GraphInterface<'a> {
     /// Returns a new interface to the given database.
     ///
-    /// Passes through any database errors.
-    pub fn new(database: &'a GBZBase) -> Result<Self, String> {
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
+    pub fn new(database: &'a GBZBase) -> Result<Self> {
         let get_tag = database.connection.prepare(
             "SELECT value FROM Tags WHERE key = ?1"
-        ).map_err(|x| x.to_string())?;
+        )?;
 
         let get_tags = database.connection.prepare(
             "SELECT key, value FROM Tags WHERE key LIKE ?1"
-        ).map_err(|x| x.to_string())?;
+        )?;
 
         let get_record = database.connection.prepare(
             "SELECT edges, bwt, sequence, next FROM Nodes WHERE handle = ?1"
-        ).map_err(|x| x.to_string())?;
+        )?;
 
         let get_path = database.connection.prepare(
             "SELECT * FROM Paths WHERE handle = ?1"
-        ).map_err(|x| x.to_string())?;
+        )?;
 
         let find_path = database.connection.prepare(
             "SELECT * FROM Paths
             WHERE sample = ?1 AND contig = ?2 AND haplotype = ?3 AND fragment <= ?4
             ORDER BY fragment DESC
             LIMIT 1"
-        ).map_err(|x| x.to_string())?;
+        )?;
 
         let paths_for_sample = database.connection.prepare(
             "SELECT * FROM Paths WHERE sample = ?1"
-        ).map_err(|x| x.to_string())?;
+        )?;
 
         let indexed_position = database.connection.prepare(
             "SELECT path_offset, node_handle, node_offset FROM ReferenceIndex
             WHERE path_handle = ?1 AND path_offset <= ?2
             ORDER BY path_offset DESC
             LIMIT 1"
-        ).map_err(|x| x.to_string())?;
+        )?;
 
         Ok(GraphInterface {
             get_tag, get_tags,
@@ -1635,31 +1644,31 @@ impl<'a> GraphInterface<'a> {
     }
 
     /// Returns the value of the [`GBWT`] tag with the given key, or [`None`] if the tag does not exist.
-    pub fn get_gbwt_tag(&mut self, key: &str) -> Result<Option<String>, String> {
+    pub fn get_gbwt_tag(&mut self, key: &str) -> Result<Option<String>> {
         let key = format!("{}{}", GBZBase::KEY_GBWT, key);
         self.get_tag.query_row(
             (key,),
             |row| row.get(0)
-        ).optional().map_err(|x| x.to_string())
+        ).optional().map_err(Error::database)
     }
 
     /// Returns the value of the [`GBZ`] tag with the given key, or [`None`] if the tag does not exist.
-    pub fn get_gbz_tag(&mut self, key: &str) -> Result<Option<String>, String> {
+    pub fn get_gbz_tag(&mut self, key: &str) -> Result<Option<String>> {
         let key = format!("{}{}", GBZBase::KEY_GBZ, key);
         self.get_tag.query_row(
             (key,),
             |row| row.get(0)
-        ).optional().map_err(|x| x.to_string())
+        ).optional().map_err(Error::database)
     }
 
     // Returns all tags with the given prefix.
-    fn get_tags_with_prefix(&mut self, prefix: &str) -> Result<Tags, String> {
+    fn get_tags_with_prefix(&mut self, prefix: &str) -> Result<Tags> {
         let mut tags = Tags::new();
         let pattern = format!("{}%", prefix);
-        let mut rows = self.get_tags.query((pattern,)).map_err(|x| x.to_string())?;
-        while let Some(row) = rows.next().map_err(|x| x.to_string())? {
-            let key: String = row.get(0).map_err(|x| x.to_string())?;
-            let value: String = row.get(1).map_err(|x| x.to_string())?;
+        let mut rows = self.get_tags.query((pattern,))?;
+        while let Some(row) = rows.next()? {
+            let key: String = row.get(0)?;
+            let value: String = row.get(1)?;
             let key = key.trim_start_matches(prefix).to_string();
             tags.insert(&key, &value);
         }
@@ -1667,26 +1676,26 @@ impl<'a> GraphInterface<'a> {
     }
 
     /// Returns all [`GBWT`] tags.
-    pub fn get_gbwt_tags(&mut self) -> Result<Tags, String> {
+    pub fn get_gbwt_tags(&mut self) -> Result<Tags> {
         self.get_tags_with_prefix(GBZBase::KEY_GBWT)
     }
 
     /// Returns all [`GBZ`] tags.
-    pub fn get_gbz_tags(&mut self) -> Result<Tags, String> {
+    pub fn get_gbz_tags(&mut self) -> Result<Tags> {
         self.get_tags_with_prefix(GBZBase::KEY_GBZ)
     }
 
     /// Returns the stable graph name (pggname) for the graph.
     ///
-    /// Passes through any database errors.
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     /// Returns an empty name if the corresponding GBZ tags cannot be parsed.
-    pub fn graph_name(&mut self) -> Result<GraphName, String> {
+    pub fn graph_name(&mut self) -> Result<GraphName> {
         let tags = self.get_gbz_tags()?;
         Ok(GraphName::from_tags(&tags).unwrap_or_default())
     }
 
     /// Returns the node record for the given handle, or [`None`] if the node does not exist.
-    pub fn get_record(&mut self, handle: usize) -> Result<Option<GBZRecord>, String> {
+    pub fn get_record(&mut self, handle: usize) -> Result<Option<GBZRecord>> {
         self.get_record.query_row(
             (handle,),
             |row| {
@@ -1698,11 +1707,11 @@ impl<'a> GraphInterface<'a> {
                 let next: Option<usize> = row.get(3)?;
                 Ok(GBZRecord { handle, edges, bwt, sequence, next })
             }
-        ).optional().map_err(|x| x.to_string())
+        ).optional().map_err(Error::database)
     }
 
     /// Returns `true` if the database stores any top-level chain links.
-    pub fn has_chain_links(&mut self) -> Result<bool, String> {
+    pub fn has_chain_links(&mut self) -> Result<bool> {
         Ok(get_numeric_value(&mut self.get_tag, GBZBase::KEY_CHAIN_LINKS)? > 0)
     }
 
@@ -1726,27 +1735,27 @@ impl<'a> GraphInterface<'a> {
     }
 
     /// Returns the path with the given handle, or [`None`] if the path does not exist.
-    pub fn get_path(&mut self, handle: usize) -> Result<Option<GBZPath>, String> {
-        self.get_path.query_row((handle,), Self::row_to_gbz_path).optional().map_err(|x| x.to_string())
+    pub fn get_path(&mut self, handle: usize) -> Result<Option<GBZPath>> {
+        self.get_path.query_row((handle,), Self::row_to_gbz_path).optional().map_err(Error::database)
     }
 
     /// Returns the path with the given name, or [`None`] if the path does not exist.
     ///
     /// The fragment field is assumed to be an offset in the haplotype.
     /// If the haplotype is fragmented, this returns the last fragment starting at or before the given offset.
-    pub fn find_path(&mut self, name: &FullPathName) -> Result<Option<GBZPath>, String> {
+    pub fn find_path(&mut self, name: &FullPathName) -> Result<Option<GBZPath>> {
         self.find_path.query_row(
             (&name.sample, &name.contig, name.haplotype, name.fragment),
             Self::row_to_gbz_path
-        ).optional().map_err(|x| x.to_string())
+        ).optional().map_err(Error::database)
     }
 
     /// Returns all paths with the given sample name.
-    pub fn paths_for_sample(&mut self, sample_name: &str) -> Result<Vec<GBZPath>, String> {
+    pub fn paths_for_sample(&mut self, sample_name: &str) -> Result<Vec<GBZPath>> {
         let mut result: Vec<GBZPath> = Vec::new();
-        let mut rows = self.paths_for_sample.query((sample_name,)).map_err(|x| x.to_string())?;
-        while let Some(row) = rows.next().map_err(|x| x.to_string())? {
-            let path = Self::row_to_gbz_path(row).map_err(|x| x.to_string())?;
+        let mut rows = self.paths_for_sample.query((sample_name,))?;
+        while let Some(row) = rows.next()? {
+            let path = Self::row_to_gbz_path(row)?;
             result.push(path);
         }
         Ok(result)
@@ -1757,7 +1766,7 @@ impl<'a> GraphInterface<'a> {
     /// Returns the last indexed position at or before offset `path_offset` on path `path_handle`.
     ///
     /// Returns [`None`] if the path does not exist or it has not been indexed.
-    pub fn indexed_position(&mut self, path_handle: usize, path_offset: usize) -> Result<Option<(usize, Pos)>, String> {
+    pub fn indexed_position(&mut self, path_handle: usize, path_offset: usize) -> Result<Option<(usize, Pos)>> {
         self.indexed_position.query_row(
             (path_handle, path_offset),
             |row| {
@@ -1766,7 +1775,7 @@ impl<'a> GraphInterface<'a> {
                 let node_offset = row.get(2)?;
                 Ok((path_offset, Pos::new(node_handle, node_offset)))
             }
-        ).optional().map_err(|x| x.to_string())
+        ).optional().map_err(Error::database)
     }
 }
 
@@ -1793,18 +1802,18 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the handle does not exist in the graph.
-    /// Returns an error if the graph reference is [`Self::None`].
+    /// Returns an [`ErrorKind::NotFound`](crate::ErrorKind::NotFound) error if the handle does not exist in the graph.
+    /// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error if the graph reference is [`Self::None`].
     /// Passes through any errors from the graph implementation.
-    pub fn gbz_record(&mut self, handle: usize) -> Result<GBZRecord, String> {
+    pub fn gbz_record(&mut self, handle: usize) -> Result<GBZRecord> {
         match self {
             GraphReference::Gbz(gbz) => {
-                GBZRecord::from_gbz(gbz, handle).ok_or_else(|| format!("The graph does not contain handle {}", handle))
+                GBZRecord::from_gbz(gbz, handle).ok_or_else(|| Error::not_found(format!("The graph does not contain handle {}", handle)))
             },
             GraphReference::Db(db) => {
-                db.get_record(handle)?.ok_or_else(|| format!("The graph does not contain handle {}", handle))
+                db.get_record(handle)?.ok_or_else(|| Error::not_found(format!("The graph does not contain handle {}", handle)))
             },
-            GraphReference::None => Err(String::from("No reference graph provided")),
+            GraphReference::None => Err(Error::invalid_query("No reference graph provided")),
         }
     }
 
@@ -1816,7 +1825,7 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
     ///
     /// Returns an empty object if the corresponding GBZ tags cannot be parsed.
     /// Passes through any errors from the graph implementation.
-    pub fn graph_name(&mut self) -> Result<GraphName, String> {
+    pub fn graph_name(&mut self) -> Result<GraphName> {
         match self {
             GraphReference::Gbz(gbz) => {
                 Ok(GraphName::from_gbz(gbz))
@@ -1895,22 +1904,22 @@ pub fn identify_file<P: AsRef<Path>>(filename: P) -> FileType {
 
 // Executes the statement, which is expected to return a single string value.
 // Then returns the value.
-fn get_string_value(statement: &mut Statement, key: &str) -> Result<String, String> {
+fn get_string_value(statement: &mut Statement, key: &str) -> Result<String> {
     let result: rusqlite::Result<String> = statement.query_row(
         (key,),
         |row| row.get(0)
     );
     match result {
         Ok(value) => Ok(value),
-        Err(x) => Err(format!("Key not found: {} ({})", key, x)),
+        Err(x) => Err(Error::invalid_data(format!("Key not found: {} ({})", key, x))),
     }
 }
 
 // Executes the statement, which is expected to return a single string value.
 // Then returns the value as an integer.
-fn get_numeric_value(statement: &mut Statement, key: &str) -> Result<usize, String> {
+fn get_numeric_value(statement: &mut Statement, key: &str) -> Result<usize> {
     let value = get_string_value(statement, key)?;
-    value.parse::<usize>().map_err(|x| x.to_string())
+    value.parse::<usize>().map_err(|x| Error::invalid_data(format!("Invalid numeric value for key {}: {}", key, x)))
 }
 
 //-----------------------------------------------------------------------------

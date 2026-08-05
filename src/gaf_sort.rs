@@ -16,6 +16,7 @@ use gbz::{support, Orientation};
 
 use simple_sds::serialize;
 
+use crate::error::{Error, Result};
 use crate::formats;
 use crate::utils;
 
@@ -282,30 +283,30 @@ impl SortParameters {
     ///
     /// Returns an error if the preset is unknown.
     /// Available presets are [`Self::PRESETS`].
-    pub fn with_preset(preset: &str) -> Result<Self, String> {
+    pub fn with_preset(preset: &str) -> Result<Self> {
         match preset {
             "default" | "short" => Ok(Self::default()),
             "long" => Ok(Self {
                 records_per_file: Self::LONG_READ_RECORDS_PER_FILE,
                 ..Self::default()
             }),
-            _ => Err(format!("Unknown preset: {}", preset)),
+            _ => Err(Error::invalid_query(format!("Unknown preset: {}", preset))),
         }
     }
 
     /// Validates the parameters and returns an error message if they are invalid.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<()> {
         if self.records_per_file == 0 {
-            return Err(String::from("SortParameters: records_per_file must be greater than 0"));
+            return Err(Error::invalid_query("SortParameters: records_per_file must be greater than 0"));
         }
         if self.files_per_merge < 2 {
-            return Err(String::from("SortParameters: files_per_merge must be at least 2"));
+            return Err(Error::invalid_query("SortParameters: files_per_merge must be at least 2"));
         }
         if self.buffer_size == 0 {
-            return Err(String::from("SortParameters: buffer_size must be greater than 0"));
+            return Err(Error::invalid_query("SortParameters: buffer_size must be greater than 0"));
         }
         if self.threads == 0 {
-            return Err(String::from("SortParameters: threads must be greater than 0"));
+            return Err(Error::invalid_query("SortParameters: threads must be greater than 0"));
         }
         Ok(())
     }
@@ -350,7 +351,9 @@ impl Default for SortParameters {
 ///
 /// # Errors
 ///
-/// Returns an error if file I/O fails or if the GAF records are malformed.
+/// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error if the parameters are invalid.
+/// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the GAF records are malformed.
+/// Passes through any [`ErrorKind::Io`](crate::ErrorKind::Io) errors.
 ///
 /// # Examples
 ///
@@ -371,7 +374,7 @@ pub fn sort_gaf<P: AsRef<Path>, Q: AsRef<Path>>(
     input_file: P,
     output_file: Q,
     params: &SortParameters,
-) -> Result<usize, String> {
+) -> Result<usize> {
     params.validate()?;
 
     let start_time = Instant::now();
@@ -382,7 +385,7 @@ pub fn sort_gaf<P: AsRef<Path>, Q: AsRef<Path>>(
     // Open input file and read header lines
     let mut reader = utils::open_file(input_file.as_ref())?;
     let header_lines = formats::read_gaf_header_lines(&mut reader)
-        .map_err(|e| format!("Failed to read GAF header: {}", e))?;
+        .map_err(|e| Error::io(format!("Failed to read GAF header: {}", e)))?;
 
     // Initial sort that may create temporary files or return a single batch of lines.
     let sort_result = initial_sort(reader, params)?;
@@ -422,7 +425,7 @@ pub fn sort_gaf<P: AsRef<Path>, Q: AsRef<Path>>(
 //-----------------------------------------------------------------------------
 
 // Performs the initial sort of the input GAF file and returns either temporary files or a single batch of lines.
-fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<InitialSortResult, String> {
+fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<InitialSortResult> {
     let mut reader = reader;
     if params.progress {
         eprintln!("Initial sort: {} records per file", params.records_per_file);
@@ -431,12 +434,12 @@ fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<Ini
     // Workers are joined in completion order rather than batch order, so we tag each
     // output with its batch index and restore the original order afterwards. Stable
     // merging relies on the temporary files being in the original input order.
-    let mut workers: Vec<Option<(JoinHandle<Result<Arc<TempFile>, String>>, usize)>> = Vec::with_capacity(params.threads);
+    let mut workers: Vec<Option<(JoinHandle<Result<Arc<TempFile>>>, usize)>> = Vec::with_capacity(params.threads);
     for _ in 0..params.threads {
         workers.push(None);
     }
     let mut outputs: Vec<(usize, Arc<TempFile>)> = Vec::new();
-    let mut join = |worker: Option<(JoinHandle<Result<Arc<TempFile>, String>>, usize)>, thread: usize| -> bool {
+    let mut join = |worker: Option<(JoinHandle<Result<Arc<TempFile>>>, usize)>, thread: usize| -> bool {
         if let Some((worker, batch_index)) = worker {
             match worker.join() {
                 Ok(Ok(sorted)) => outputs.push((batch_index, sorted)),
@@ -483,7 +486,7 @@ fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<Ini
         }
 
         if batch == 0 {
-            let buffer = reader.fill_buf().map_err(|e| format!("Failed to read input: {}", e))?;
+            let buffer = reader.fill_buf().map_err(|e| Error::io(format!("Failed to read input: {}", e)))?;
             if buffer.is_empty() {
                 // No more data after the first batch.
                 return Ok(InitialSortResult::SingleBatch(lines));
@@ -510,7 +513,7 @@ fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<Ini
     }
 
     if !ok {
-        return Err(String::from("Initial sort failed"));
+        return Err(Error::io("Initial sort failed"));
     }
 
     // Restore the original batch order for stable merging.
@@ -530,7 +533,7 @@ fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<Ini
 //-----------------------------------------------------------------------------
 
 // Performs one round of merges and returns a new set of temporary files.
-fn merge_round(inputs: Vec<Arc<TempFile>>, round: usize, params: &SortParameters) -> Result<Vec<Arc<TempFile>>, String> {
+fn merge_round(inputs: Vec<Arc<TempFile>>, round: usize, params: &SortParameters) -> Result<Vec<Arc<TempFile>>> {
     if params.progress {
         eprintln!("Round {}: {} files per batch", round, params.files_per_merge);
     }
@@ -538,12 +541,12 @@ fn merge_round(inputs: Vec<Arc<TempFile>>, round: usize, params: &SortParameters
     // Workers are joined in completion order rather than batch order, so we tag each
     // output with its batch index and restore the original order afterwards. Stable
     // merging relies on the temporary files being in the original input order.
-    let mut workers: Vec<Option<(JoinHandle<Result<Arc<TempFile>, String>>, usize)>> = Vec::with_capacity(params.threads);
+    let mut workers: Vec<Option<(JoinHandle<Result<Arc<TempFile>>>, usize)>> = Vec::with_capacity(params.threads);
     for _ in 0..params.threads {
         workers.push(None);
     }
     let mut outputs: Vec<(usize, Arc<TempFile>)> = Vec::new();
-    let mut join = |worker: Option<(JoinHandle<Result<Arc<TempFile>, String>>, usize)>, thread: usize| -> bool {
+    let mut join = |worker: Option<(JoinHandle<Result<Arc<TempFile>>>, usize)>, thread: usize| -> bool {
         if let Some((worker, batch_index)) = worker {
             match worker.join() {
                 Ok(Ok(merged)) => outputs.push((batch_index, merged)),
@@ -592,8 +595,7 @@ fn merge_round(inputs: Vec<Arc<TempFile>>, round: usize, params: &SortParameters
     }
 
     if !ok {
-        let msg = format!("Merge round {} failed", round);
-        return Err(msg);
+        return Err(Error::io(format!("Merge round {} failed", round)));
     }
 
     // Restore the original batch order for stable merging.
@@ -608,12 +610,12 @@ fn merge_round(inputs: Vec<Arc<TempFile>>, round: usize, params: &SortParameters
 //-----------------------------------------------------------------------------
 
 // Creates a writer for the output file, or stdout if the path is "-".
-fn create_output_writer(output_file: &Path) -> Result<Box<dyn Write>, String> {
+fn create_output_writer(output_file: &Path) -> Result<Box<dyn Write>> {
     if output_file == Path::new("-") {
         Ok(Box::new(BufWriter::new(io::stdout())))
     } else {
         let file = File::create(output_file)
-            .map_err(|e| format!("Failed to create output file: {}", e))?;
+            .map_err(|e| Error::io(format!("Failed to create output file: {}", e)))?;
         Ok(Box::new(BufWriter::new(file)))
     }
 }
@@ -624,7 +626,7 @@ fn sort_to_output(
     header_lines: &[String],
     output_file: &Path,
     params: &SortParameters,
-) -> Result<(), String> {
+) -> Result<()> {
     let mut records: Vec<GAFRecord> = lines
         .into_iter()
         .map(|line| GAFRecord::new(line, params.key_type))
@@ -641,23 +643,23 @@ fn sort_to_output(
     // Write header
     for line in header_lines {
         writeln!(writer, "{}", line)
-            .map_err(|e| format!("Failed to write header: {}", e))?;
+            .map_err(|e| Error::io(format!("Failed to write header: {}", e)))?;
     }
 
     // Write sorted records
     for record in records {
         record.write_gaf_line(&mut writer)
-            .map_err(|e| format!("Failed to write output: {}", e))?;
+            .map_err(|e| Error::io(format!("Failed to write output: {}", e)))?;
     }
 
     writer.flush()
-        .map_err(|e| format!("Failed to flush output: {}", e))?;
+        .map_err(|e| Error::io(format!("Failed to flush output: {}", e)))?;
 
     Ok(())
 }
 
 // Sorts lines to a temporary file.
-fn sort_to_temp(lines: Vec<Vec<u8>>, key_type: KeyType, stable: bool) -> Result<Arc<TempFile>, String> {
+fn sort_to_temp(lines: Vec<Vec<u8>>, key_type: KeyType, stable: bool) -> Result<Arc<TempFile>> {
     let mut records: Vec<GAFRecord> = lines
         .into_iter()
         .map(|line| GAFRecord::new(line, key_type))
@@ -670,21 +672,21 @@ fn sort_to_temp(lines: Vec<Vec<u8>>, key_type: KeyType, stable: bool) -> Result<
     }
 
     let mut temp = TempFile::create()
-        .map_err(|e| format!("Failed to create temporary file: {}", e))?;
+        .map_err(|e| Error::io(format!("Failed to create temporary file: {}", e)))?;
     temp.records = records.len();
 
     let mut writer = temp.writer()
-        .map_err(|e| format!("Failed to open temporary file for writing: {}", e))?;
+        .map_err(|e| Error::io(format!("Failed to open temporary file for writing: {}", e)))?;
 
     for record in records {
         record.serialize(&mut writer)
-            .map_err(|e| format!("Failed to write to temporary file: {}", e))?;
+            .map_err(|e| Error::io(format!("Failed to write to temporary file: {}", e)))?;
     }
 
     writer.into_inner()
-        .map_err(|e| format!("Failed to finish compression: {}", e))?
+        .map_err(|e| Error::io(format!("Failed to finish compression: {}", e)))?
         .finish()
-        .map_err(|e| format!("Failed to finish compression: {}", e))?;
+        .map_err(|e| Error::io(format!("Failed to finish compression: {}", e)))?;
 
     Ok(Arc::new(temp))
 }
@@ -694,16 +696,16 @@ fn flip_source_index(index: usize, total: usize) -> usize {
 }
 
 // Merges multiple temporary files into a new temporary file.
-fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<TempFile>, String> {
+fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<TempFile>> {
     let mut output = TempFile::create()
-        .map_err(|e| format!("Failed to create temporary file: {}", e))?;
+        .map_err(|e| Error::io(format!("Failed to create temporary file: {}", e)))?;
 
     // Open all input files
     let mut readers: Vec<_> = inputs
         .iter()
         .map(|temp| temp.reader())
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("Failed to open temporary file for reading: {}", e))?;
+        .collect::<io::Result<_>>()
+        .map_err(|e| Error::io(format!("Failed to open temporary file for reading: {}", e)))?;
 
     let mut buffers: Vec<VecDeque<GAFRecord>> = vec![VecDeque::new(); readers.len()];
     let mut remaining: Vec<usize> = inputs.iter().map(|t| t.records).collect();
@@ -713,13 +715,13 @@ fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<Tem
                        readers: &mut Vec<_>,
                        buffers: &mut Vec<VecDeque<GAFRecord>>,
                        remaining: &mut Vec<usize>|
-     -> Result<(), String> {
+     -> Result<()> {
         let count = remaining[reader_idx].min(buffer_size);
         if count > 0 {
             buffers[reader_idx].clear();
             for _ in 0..count {
                 let mut record = GAFRecord::deserialize(&mut readers[reader_idx])
-                    .map_err(|e| format!("Failed to read from temporary file: {}", e))?;
+                    .map_err(|e| Error::io(format!("Failed to read from temporary file: {}", e)))?;
                 record.flip_key(); // Flip for priority queue
                 buffers[reader_idx].push_back(record);
             }
@@ -743,7 +745,7 @@ fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<Tem
 
     // Open output
     let mut writer = output.writer()
-        .map_err(|e| format!("Failed to open output temporary file for writing: {}", e))?;
+        .map_err(|e| Error::io(format!("Failed to open output temporary file for writing: {}", e)))?;
     let mut out_buffer = Vec::new();
 
     // Merge loop
@@ -757,7 +759,7 @@ fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<Tem
         if out_buffer.len() >= buffer_size {
             for rec in out_buffer.drain(..) {
                 rec.serialize(&mut writer)
-                    .map_err(|e| format!("Failed to write to output: {}", e))?;
+                    .map_err(|e| Error::io(format!("Failed to write to output: {}", e)))?;
                 output.records += 1;
             }
         }
@@ -776,14 +778,14 @@ fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<Tem
     // Write remaining output buffer
     for rec in out_buffer {
         rec.serialize(&mut writer)
-            .map_err(|e| format!("Failed to write to output: {}", e))?;
+            .map_err(|e| Error::io(format!("Failed to write to output: {}", e)))?;
         output.records += 1;
     }
 
     writer.into_inner()
-        .map_err(|e| format!("Failed to finish compression: {}", e))?
+        .map_err(|e| Error::io(format!("Failed to finish compression: {}", e)))?
         .finish()
-        .map_err(|e| format!("Failed to finish compression: {}", e))?;
+        .map_err(|e| Error::io(format!("Failed to finish compression: {}", e)))?;
 
     Ok(Arc::new(output))
 }
@@ -796,21 +798,21 @@ fn merge_to_output(
     header_lines: &[String],
     output_file: &Path,
     params: &SortParameters,
-) -> Result<usize, String> {
+) -> Result<usize> {
     let mut writer = create_output_writer(output_file)?;
 
     // Write header
     for line in header_lines {
         writeln!(writer, "{}", line)
-            .map_err(|e| format!("Failed to write header: {}", e))?;
+            .map_err(|e| Error::io(format!("Failed to write header: {}", e)))?;
     }
 
     // Open all input files
     let mut readers: Vec<_> = inputs
         .iter()
         .map(|temp| temp.reader())
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("Failed to open temporary file for reading: {}", e))?;
+        .collect::<io::Result<_>>()
+        .map_err(|e| Error::io(format!("Failed to open temporary file for reading: {}", e)))?;
     let total_records: usize = inputs.iter().map(|t| t.records).sum();
 
     let mut buffers: Vec<VecDeque<GAFRecord>> = vec![VecDeque::new(); readers.len()];
@@ -821,13 +823,13 @@ fn merge_to_output(
                        readers: &mut Vec<_>,
                        buffers: &mut Vec<VecDeque<GAFRecord>>,
                        remaining: &mut Vec<usize>|
-     -> Result<(), String> {
+     -> Result<()> {
         let count = remaining[reader_idx].min(params.buffer_size);
         if count > 0 {
             buffers[reader_idx].clear();
             for _ in 0..count {
                 let mut record = GAFRecord::deserialize(&mut readers[reader_idx])
-                    .map_err(|e| format!("Failed to read from temporary file: {}", e))?;
+                    .map_err(|e| Error::io(format!("Failed to read from temporary file: {}", e)))?;
                 record.flip_key();
                 buffers[reader_idx].push_back(record);
             }
@@ -860,7 +862,7 @@ fn merge_to_output(
         if out_buffer.len() >= params.buffer_size {
             for rec in out_buffer.drain(..) {
                 rec.write_gaf_line(&mut writer)
-                    .map_err(|e| format!("Failed to write to output: {}", e))?;
+                    .map_err(|e| Error::io(format!("Failed to write to output: {}", e)))?;
             }
         }
 
@@ -878,11 +880,11 @@ fn merge_to_output(
     // Write remaining output buffer
     for rec in out_buffer {
         rec.write_gaf_line(&mut writer)
-            .map_err(|e| format!("Failed to write to output: {}", e))?;
+            .map_err(|e| Error::io(format!("Failed to write to output: {}", e)))?;
     }
 
     writer.flush()
-        .map_err(|e| format!("Failed to flush output: {}", e))?;
+        .map_err(|e| Error::io(format!("Failed to flush output: {}", e)))?;
 
     Ok(total_records)
 }

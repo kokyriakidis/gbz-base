@@ -3,7 +3,7 @@ use std::io::{self, Write, BufWriter};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Instant;
-use std::{process, thread};
+use std::thread;
 
 use gbz_base::{GBZBase, GraphInterface};
 use gbz_base::{GAFBase, GAFBaseParams, GraphReference};
@@ -11,6 +11,7 @@ use gbz_base::db::FileType;
 use gbz_base::gaf_sort::{sort_gaf, KeyType, SortParameters};
 use gbz_base::{db, formats, utils};
 use gbz_base::ReadSet;
+use gbz_base::{Error, Result};
 
 use gbz::GBZ;
 
@@ -45,9 +46,9 @@ enum Commands {
     Sort(SortArgs),
 }
 
-fn main() -> Result<(), String> {
+fn main() -> Result<()> {
     let matches = Cli::command().get_matches();
-    let cli = Cli::from_arg_matches(&matches).map_err(|e| e.to_string())?;
+    let cli = Cli::from_arg_matches(&matches).map_err(Error::invalid_query)?;
     match cli.command {
         Commands::Construct(args) => {
             // `subcommand_matches` is guaranteed to succeed, as we just parsed the `construct` subcommand.
@@ -64,8 +65,8 @@ fn main() -> Result<(), String> {
 }
 
 // Parses an unsigned integer that may use suffixes such as `k` or `M`.
-fn parse_quantity(s: &str) -> Result<usize, String> {
-    binaries::parse_unsigned(s).map_err(|x| x.to_string())
+fn parse_quantity(s: &str) -> Result<usize> {
+    binaries::parse_unsigned(s).map_err(Error::invalid_query)
 }
 
 // Parameter preset shared by the `construct` and `sort` subcommands.
@@ -130,7 +131,7 @@ struct ConstructArgs {
     overwrite: bool,
 }
 
-fn construct(args: ConstructArgs, matches: &clap::ArgMatches) -> Result<(), String> {
+fn construct(args: ConstructArgs, matches: &clap::ArgMatches) -> Result<()> {
     let start_time = Instant::now();
 
     // Start from the preset and let each option override it only if the user passed
@@ -160,9 +161,9 @@ fn construct(args: ConstructArgs, matches: &clap::ArgMatches) -> Result<(), Stri
     if binaries::file_exists(&db_file) {
         if args.overwrite {
             eprintln!("Overwriting database {}", db_file.display());
-            fs::remove_file(&db_file).map_err(|x| x.to_string())?;
+            fs::remove_file(&db_file)?;
         } else {
-            return Err(format!("Database {} already exists", db_file.display()));
+            return Err(Error::invalid_query(format!("Database {} already exists", db_file.display())));
         }
     }
 
@@ -171,7 +172,7 @@ fn construct(args: ConstructArgs, matches: &clap::ArgMatches) -> Result<(), Stri
         match db::identify_file(graph_file) {
             FileType::Gbz => {
                 eprintln!("Loading GBZ graph {}", graph_file.display());
-                let graph: GBZ = serialize::load_from(graph_file).map_err(|x| x.to_string())?;
+                let graph: GBZ = serialize::load_from(graph_file)?;
                 GAFBase::create_from_files(
                     &args.gaf, args.gbwt.as_deref(), &db_file,
                     GraphReference::Gbz(&graph), &params
@@ -179,8 +180,7 @@ fn construct(args: ConstructArgs, matches: &clap::ArgMatches) -> Result<(), Stri
             },
             FileType::Version(v) => {
                 if v != GBZBase::VERSION {
-                    let msg = format!("File {} is {}; expected {}", graph_file.display(), v, GBZBase::VERSION);
-                    return Err(msg);
+                    return Err(Error::unsupported(format!("File {} is {}; expected {}", graph_file.display(), v, GBZBase::VERSION)));
                 }
                 eprintln!("Opening GBZ-base {}", graph_file.display());
                 let database = GBZBase::open(graph_file)?;
@@ -191,7 +191,7 @@ fn construct(args: ConstructArgs, matches: &clap::ArgMatches) -> Result<(), Stri
                 )?;
             },
             _ => {
-                return Err(format!("File {} is not a valid graph", graph_file.display()));
+                return Err(Error::unsupported(format!("File {} is not a valid graph", graph_file.display())));
             }
         };
     } else {
@@ -239,17 +239,17 @@ struct DecompressArgs {
     output: Option<PathBuf>,
 }
 
-fn decompress(args: DecompressArgs) -> Result<(), String> {
+fn decompress(args: DecompressArgs) -> Result<()> {
     let start_time = Instant::now();
 
     if args.chunk_size < 1 {
-        return Err("--chunk-size must be positive".to_string());
+        return Err(Error::invalid_query("--chunk-size must be positive"));
     }
 
     // Inputs.
     let database = GAFBase::open(&args.gaf_base)?;
     let graph = if let Some(gbz_file) = &args.reference {
-        Some(serialize::load_from(gbz_file).map_err(|x| x.to_string())?)
+        Some(serialize::load_from(gbz_file)?)
     } else {
         None
     };
@@ -258,12 +258,7 @@ fn decompress(args: DecompressArgs) -> Result<(), String> {
     let alignments = database.graph_name()?;
     if let Some(graph) = &graph {
         let reference = GraphName::from_gbz(graph);
-        let result = utils::require_valid_reference(&alignments, &reference);
-        if let Err(e) = result {
-            // Print the error manually, as it contains multiple lines.
-            eprint!("Error: {}", e);
-            process::exit(1);
-        }
+        utils::require_valid_reference(&alignments, &reference)?;
     }
 
     write_gaf(&database, &alignments, graph.as_ref(), args.chunk_size, args.output.as_deref())?;
@@ -282,11 +277,11 @@ fn write_gaf(
     graph: Option<&GBZ>,
     chunk_size: usize,
     output: Option<&std::path::Path>,
-) -> Result<(), String> {
+) -> Result<()> {
     // Open the output as either a file or stdout.
     let writer: Box<dyn Write + Send> = match output {
         Some(path) if path != std::path::Path::new("-") => {
-            let file = File::create(path).map_err(|x| format!("Failed to create {}: {}", path.display(), x))?;
+            let file = File::create(path).map_err(|x| Error::io(format!("Failed to create {}: {}", path.display(), x)))?;
             Box::new(file)
         },
         _ => Box::new(io::stdout()),
@@ -295,7 +290,7 @@ fn write_gaf(
     // Decoded ReadSets, with an empty ReadSet signaling the end of input.
     let (to_output, from_decoder) = mpsc::sync_channel(4);
 
-    // Status of the output thread as Result<(), String>.
+    // Status of the output thread as Result<()>.
     let (to_decoder, from_output) = mpsc::sync_channel(1);
 
     // Determine header lines first and pass them to the output thread.
@@ -305,10 +300,10 @@ fn write_gaf(
     let output_thread = thread::spawn(move || {
         let mut output = BufWriter::new(writer);
         let mut status = formats::write_gaf_file_header(&mut output)
-            .map_err(|e| e.to_string());
+            .map_err(Error::io);
         if status.is_ok() {
             status = formats::write_header_lines(&header_lines, &mut output)
-                .map_err(|e| e.to_string());
+                .map_err(Error::io);
         }
         while status.is_ok() {
             let read_set: ReadSet = from_decoder.recv().unwrap_or_else(|_| ReadSet::default());
@@ -318,7 +313,7 @@ fn write_gaf(
             status = read_set.to_gaf(&mut output);
         }
         if status.is_ok() {
-            status = output.flush().map_err(|e| e.to_string());
+            status = output.flush().map_err(Error::io);
         }
         let _ = to_decoder.send(status);
     });
@@ -336,7 +331,7 @@ fn write_gaf(
         }
         let read_set = read_set.unwrap();
         if read_set.is_empty() {
-            status = Err(format!("No reads found in rows {}..{}", range.start, range.end));
+            status = Err(Error::invalid_data(format!("No reads found in rows {}..{}", range.start, range.end)));
             let _ = to_output.send(ReadSet::default()); // Signal end of input.
             break;
         }
@@ -347,7 +342,7 @@ fn write_gaf(
     if status.is_ok() {
         let _ = to_output.send(ReadSet::default()); // Signal end of input.
         if found_alns != database.alignments() {
-            status = Err(format!("Expected {} alignments, but found {}", database.alignments(), found_alns));
+            status = Err(Error::invalid_data(format!("Expected {} alignments, but found {}", database.alignments(), found_alns)));
         }
     }
 
@@ -419,7 +414,7 @@ struct SortArgs {
     progress: bool,
 }
 
-fn sort(args: SortArgs, matches: &clap::ArgMatches) -> Result<(), String> {
+fn sort(args: SortArgs, matches: &clap::ArgMatches) -> Result<()> {
     let start_time = Instant::now();
 
     let output_file = args.output.unwrap_or_else(|| PathBuf::from("-"));
@@ -453,13 +448,13 @@ fn sort(args: SortArgs, matches: &clap::ArgMatches) -> Result<(), String> {
 
     // Validate the effective parameters.
     if params.records_per_file < 1000 {
-        return Err("--records-per-file must be at least 1000".to_string());
+        return Err(Error::invalid_query("--records-per-file must be at least 1000"));
     }
     if params.files_per_merge < 2 {
-        return Err("--files-per-merge must be at least 2".to_string());
+        return Err(Error::invalid_query("--files-per-merge must be at least 2"));
     }
     if params.buffer_size < 1 {
-        return Err("--buffer-size must be positive".to_string());
+        return Err(Error::invalid_query("--buffer-size must be positive"));
     }
 
     // Sort the GAF file.

@@ -2,6 +2,7 @@ use gbz_base::{GBZBase, GraphInterface, GraphReference, GAFBase};
 use gbz_base::{Subgraph, ReadSet};
 use gbz_base::{SubgraphQuery, HaplotypeOutput, SnarlOutput, AlignmentOutput};
 use gbz_base::utils;
+use gbz_base::Error;
 
 use gbz::FullPathName;
 
@@ -17,11 +18,11 @@ use rand::{Rng, SeedableRng};
 
 //-----------------------------------------------------------------------------
 
-fn main() -> Result<(), String> {
+fn main() -> Result<(), Error> {
     let start_time = Instant::now();
 
-    let config = Config::new()?;
-    let queries = generate_queries(&config)?;
+    let config = Config::new().map_err(Error::invalid_query)?;
+    let queries = generate_queries(&config).map_err(Error::invalid_query)?;
 
     // Open GBZ-base and GAF-base.
     let gbz_base = GBZBase::open(&config.gbz_base_file)?;

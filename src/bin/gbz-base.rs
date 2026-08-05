@@ -2,6 +2,7 @@ use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex};
 use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput, SnarlOutput};
 use gbz_base::{GAFBase, ReadSet, AlignmentOutput};
 use gbz_base::{formats, utils};
+use gbz_base::{Error, Result};
 
 use gbz::{FullPathName, Orientation, GBZ, GENERIC_SAMPLE};
 use gbz::support;
@@ -12,7 +13,7 @@ use std::fs::{self, OpenOptions};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use std::{io, process};
+use std::io;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
@@ -39,7 +40,7 @@ enum Commands {
     Query(QueryArgs),
 }
 
-fn main() -> Result<(), String> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Construct(args) => construct(args),
@@ -48,8 +49,8 @@ fn main() -> Result<(), String> {
 }
 
 // Parses an unsigned integer that may use suffixes such as `k` or `M`.
-fn parse_quantity(s: &str) -> Result<usize, String> {
-    binaries::parse_unsigned(s).map_err(|x| x.to_string())
+fn parse_quantity(s: &str) -> Result<usize> {
+    binaries::parse_unsigned(s).map_err(Error::invalid_query)
 }
 
 //-----------------------------------------------------------------------------
@@ -73,7 +74,7 @@ struct ConstructArgs {
     overwrite: bool,
 }
 
-fn construct(args: ConstructArgs) -> Result<(), String> {
+fn construct(args: ConstructArgs) -> Result<()> {
     let start_time = Instant::now();
 
     let db_file = args.output.unwrap_or_else(|| {
@@ -86,9 +87,9 @@ fn construct(args: ConstructArgs) -> Result<(), String> {
     if binaries::file_exists(&db_file) {
         if args.overwrite {
             eprintln!("Overwriting database {}", db_file.display());
-            fs::remove_file(&db_file).map_err(|x| x.to_string())?;
+            fs::remove_file(&db_file)?;
         } else {
-            return Err(format!("Database {} already exists", db_file.display()));
+            return Err(Error::invalid_query(format!("Database {} already exists", db_file.display())));
         }
     }
 
@@ -243,7 +244,7 @@ impl QueryConfig {
     }
 }
 
-fn query(args: QueryArgs) -> Result<(), String> {
+fn query(args: QueryArgs) -> Result<()> {
     let start_time = Instant::now();
 
     // Parse arguments.
@@ -253,10 +254,10 @@ fn query(args: QueryArgs) -> Result<(), String> {
     let use_gbz = GBZ::is_gbz(&config.filename);
     let mut subgraph = Subgraph::new();
     if use_gbz {
-        let graph: GBZ = serialize::load_from(&config.filename).map_err(|x| x.to_string())?;
+        let graph: GBZ = serialize::load_from(&config.filename)?;
         let path_index = PathIndex::new(&graph, GBZBase::INDEX_INTERVAL, false)?;
         let chains = match &config.chains {
-            Some(file) => Some(serialize::load_from(file).map_err(|x| x.to_string())?),
+            Some(file) => Some(serialize::load_from(file)?),
             None => None,
         };
         subgraph.from_gbz(&graph, Some(&path_index), chains.as_ref(), &config.query)?;
@@ -280,7 +281,7 @@ fn query(args: QueryArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn build_query_config(args: QueryArgs) -> Result<QueryConfig, String> {
+fn build_query_config(args: QueryArgs) -> Result<QueryConfig> {
     let query = build_subgraph_query(&args)?;
     Ok(QueryConfig {
         filename: args.filename,
@@ -294,7 +295,7 @@ fn build_query_config(args: QueryArgs) -> Result<QueryConfig, String> {
     })
 }
 
-fn build_subgraph_query(args: &QueryArgs) -> Result<SubgraphQuery, String> {
+fn build_subgraph_query(args: &QueryArgs) -> Result<SubgraphQuery> {
     let mut count = 0;
     let mut needs_path_name = false;
     if args.offset.is_some() { count += 1; needs_path_name = true; }
@@ -302,12 +303,12 @@ fn build_subgraph_query(args: &QueryArgs) -> Result<SubgraphQuery, String> {
     if !args.node.is_empty() || !args.handle.is_empty() { count += 1; }
     if args.between.is_some() { count += 1; }
     if count != 1 {
-        return Err("Exactly one of --offset, --interval, --node (or --handle), and --between must be provided".to_string());
+        return Err(Error::invalid_query("Exactly one of --offset, --interval, --node (or --handle), and --between must be provided"));
     }
 
     let path_name = if needs_path_name {
         let sample = args.sample.clone().unwrap_or_else(|| String::from(GENERIC_SAMPLE));
-        let contig = args.contig.clone().ok_or_else(|| String::from("Contig name must be provided with --contig"))?;
+        let contig = args.contig.clone().ok_or_else(|| Error::invalid_query("Contig name must be provided with --contig"))?;
         Some(FullPathName::reference(&sample, &contig))
     } else {
         None
@@ -348,20 +349,20 @@ fn build_subgraph_query(args: &QueryArgs) -> Result<SubgraphQuery, String> {
     Ok(query.with_context(args.context).with_snarls(snarls).with_output(output))
 }
 
-fn parse_interval(s: &str) -> Result<Range<usize>, String> {
+fn parse_interval(s: &str) -> Result<Range<usize>> {
     let mut parts = s.split("..");
-    let start = parts.next().ok_or_else(|| format!("Invalid interval: {}", s))?;
-    let start = start.parse::<usize>().map_err(|x| format!("Failed to parse interval start: {}", x))?;
-    let end = parts.next().ok_or_else(|| format!("Invalid interval: {}", s))?;
-    let end = end.parse::<usize>().map_err(|x| format!("Failed to parse interval end: {}", x))?;
+    let start = parts.next().ok_or_else(|| Error::invalid_query(format!("Invalid interval: {}", s)))?;
+    let start = start.parse::<usize>().map_err(|x| Error::invalid_query(format!("Failed to parse interval start: {}", x)))?;
+    let end = parts.next().ok_or_else(|| Error::invalid_query(format!("Invalid interval: {}", s)))?;
+    let end = end.parse::<usize>().map_err(|x| Error::invalid_query(format!("Failed to parse interval end: {}", x)))?;
     if parts.next().is_some() {
-        return Err(format!("Invalid interval: {}", s));
+        return Err(Error::invalid_query(format!("Invalid interval: {}", s)));
     }
     Ok(start..end)
 }
 
 // Parses a node id that may be followed by a + or a -.
-fn parse_handle(s: &str) -> Result<usize, String> {
+fn parse_handle(s: &str) -> Result<usize> {
     let mut len = s.len();
     let orientation = if s.ends_with('+') {
         len -= 1;
@@ -372,18 +373,18 @@ fn parse_handle(s: &str) -> Result<usize, String> {
     } else {
         Orientation::Forward
     };
-    let id = s[..len].parse::<usize>().map_err(|x| format!("Failed to parse (oriented) node: {}", x))?;
+    let id = s[..len].parse::<usize>().map_err(|x| Error::invalid_query(format!("Failed to parse (oriented) node: {}", x)))?;
     Ok(support::encode_node(id, orientation))
 }
 
-fn parse_between(s: &str) -> Result<(usize, usize), String> {
+fn parse_between(s: &str) -> Result<(usize, usize)> {
     let mut parts = s.split(':');
-    let start = parts.next().ok_or_else(|| format!("Invalid pair of (oriented) nodes: {}", s))?;
+    let start = parts.next().ok_or_else(|| Error::invalid_query(format!("Invalid pair of (oriented) nodes: {}", s)))?;
     let start = parse_handle(start)?;
-    let end = parts.next().ok_or_else(|| format!("Invalid pair of (oriented) nodes: {}", s))?;
+    let end = parts.next().ok_or_else(|| Error::invalid_query(format!("Invalid pair of (oriented) nodes: {}", s)))?;
     let end = parse_handle(end)?;
     if parts.next().is_some() {
-        return Err(format!("Invalid pair of (oriented) nodes: {}", s));
+        return Err(Error::invalid_query(format!("Invalid pair of (oriented) nodes: {}", s)));
     }
     Ok((start, end))
 }
@@ -394,15 +395,15 @@ fn subgraph_statistics(subgraph: &Subgraph) {
     eprintln!("Subgraph contains {} nodes and {} paths", subgraph.nodes(), subgraph.paths());
 }
 
-fn write_subgraph(subgraph: &Subgraph, config: &QueryConfig) -> Result<(), String> {
+fn write_subgraph(subgraph: &Subgraph, config: &QueryConfig) -> Result<()> {
     let mut output = io::stdout().lock();
     match config.format {
-        OutputFormat::Gfa => subgraph.write_gfa(&mut output, config.cigar).map_err(|x| x.to_string()),
-        OutputFormat::Json => subgraph.write_json(&mut output, config.cigar).map_err(|x| x.to_string()),
+        OutputFormat::Gfa => subgraph.write_gfa(&mut output, config.cigar).map_err(Error::io),
+        OutputFormat::Json => subgraph.write_json(&mut output, config.cigar).map_err(Error::io),
     }
 }
 
-fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &QueryConfig) -> Result<(), String> {
+fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &QueryConfig) -> Result<()> {
     if !config.write_gaf() {
         return Ok(());
     }
@@ -413,12 +414,7 @@ fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Quer
     let mut graph = graph;
     let reference = graph.graph_name()?;
     let alignments = gaf_base.graph_name()?;
-    let result = utils::require_valid_reference(&alignments, &reference);
-    if let Err(e) = result {
-        // Print the error manually, as it contains multiple lines.
-        eprint!("Error: {}", e);
-        process::exit(1);
-    }
+    utils::require_valid_reference(&alignments, &reference)?;
 
     // Extract the reads.
     let read_set = ReadSet::new(graph, subgraph, &gaf_base, config.alignment_output)?;
@@ -437,19 +433,19 @@ fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Quer
     let gaf_output_file = config.gaf_output.as_ref().unwrap();
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
-    let mut gaf_output = options.open(gaf_output_file).map_err(|x| x.to_string())?;
+    let mut gaf_output = options.open(gaf_output_file)?;
     formats::write_gaf_file_header(&mut gaf_output).map_err(
-        |x| format!("Failed to write GAF header to {}: {}", gaf_output_file, x)
+        |x| Error::io(format!("Failed to write GAF header to {}: {}", gaf_output_file, x))
     )?;
     let graph_name = subgraph.graph_name();
     if let Some(name) = graph_name {
         let header_lines = name.to_gaf_header_lines();
         formats::write_header_lines(&header_lines, &mut gaf_output).map_err(
-            |x| format!("Failed to write GAF header lines to {}: {}", gaf_output_file, x)
+            |x| Error::io(format!("Failed to write GAF header lines to {}: {}", gaf_output_file, x))
         )?;
     }
     read_set.to_gaf(&mut gaf_output).map_err(
-        |x| format!("Failed to write GAF to {}: {}", gaf_output_file, x)
+        |x| Error::io(format!("Failed to write GAF to {}: {}", gaf_output_file, x))
     )
 }
 

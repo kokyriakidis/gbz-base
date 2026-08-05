@@ -2,6 +2,7 @@ use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex};
 use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput, SnarlOutput};
 use gbz_base::{GAFBase, ReadSet, AlignmentOutput};
 use gbz_base::{formats, utils};
+use gbz_base::Error;
 
 use gbz::{FullPathName, Orientation, GBZ, GENERIC_SAMPLE};
 use gbz::support;
@@ -17,23 +18,23 @@ use getopts::Options;
 
 //-----------------------------------------------------------------------------
 
-fn main() -> Result<(), String> {
+fn main() -> Result<(), Error> {
     eprintln!("This tool has been deprecated. Please use `gbz-base query` instead.");
     eprintln!();
 
     let start_time = Instant::now();
 
     // Parse arguments.
-    let config = Config::new()?;
+    let config = Config::new().map_err(Error::invalid_query)?;
 
     // Determine the type of the input file and extract the subgraph accordingly.
     let use_gbz = GBZ::is_gbz(&config.filename);
     let mut subgraph = Subgraph::new();
     if use_gbz {
-        let graph: GBZ = serialize::load_from(&config.filename).map_err(|x| x.to_string())?;
+        let graph: GBZ = serialize::load_from(&config.filename)?;
         let path_index = PathIndex::new(&graph, GBZBase::INDEX_INTERVAL, false)?;
         let chains = match &config.chains {
-            Some(file) => Some(serialize::load_from(file).map_err(|x| x.to_string())?),
+            Some(file) => Some(serialize::load_from(file)?),
             None => None,
         };
         subgraph.from_gbz(&graph, Some(&path_index), chains.as_ref(), &config.query)?;
@@ -63,15 +64,15 @@ fn subgraph_statistics(subgraph: &Subgraph) {
     eprintln!("Subgraph contains {} nodes and {} paths", subgraph.nodes(), subgraph.paths());
 }
 
-fn write_subgraph(subgraph: &Subgraph, config: &Config) -> Result<(), String> {
+fn write_subgraph(subgraph: &Subgraph, config: &Config) -> Result<(), Error> {
     let mut output = io::stdout().lock();
     match config.format {
-        OutputFormat::Gfa => subgraph.write_gfa(&mut output, config.cigar).map_err(|x| x.to_string()),
-        OutputFormat::Json => subgraph.write_json(&mut output, config.cigar).map_err(|x| x.to_string()),
+        OutputFormat::Gfa => subgraph.write_gfa(&mut output, config.cigar).map_err(Error::io),
+        OutputFormat::Json => subgraph.write_json(&mut output, config.cigar).map_err(Error::io),
     }
 }
 
-fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Config) -> Result<(), String> {
+fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Config) -> Result<(), Error> {
     if !config.write_gaf() {
         return Ok(());
     }
@@ -83,11 +84,7 @@ fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Conf
     let reference = graph.graph_name()?;
     let alignments = gaf_base.graph_name()?;
     let result = utils::require_valid_reference(&alignments, &reference);
-    if let Err(e) = result {
-        // Print the error manually, as it contains multiple lines.
-        eprint!("Error: {}", e);
-        process::exit(1);
-    }
+    result?;
 
     // Extract the reads.
     let read_set = ReadSet::new(graph, subgraph, &gaf_base, config.alignment_output)?;
@@ -106,19 +103,19 @@ fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Conf
     let gaf_output_file = config.gaf_output.as_ref().unwrap();
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
-    let mut gaf_output = options.open(gaf_output_file).map_err(|x| x.to_string())?;
+    let mut gaf_output = options.open(gaf_output_file)?;
     formats::write_gaf_file_header(&mut gaf_output).map_err(
-        |x| format!("Failed to write GAF header to {}: {}", gaf_output_file, x)
+        |x| Error::io(format!("Failed to write GAF header to {}: {}", gaf_output_file, x))
     )?;
     let graph_name = subgraph.graph_name();
     if let Some(name) = graph_name {
         let header_lines = name.to_gaf_header_lines();
         formats::write_header_lines(&header_lines, &mut gaf_output).map_err(
-            |x| format!("Failed to write GAF header lines to {}: {}", gaf_output_file, x)
+            |x| Error::io(format!("Failed to write GAF header lines to {}: {}", gaf_output_file, x))
         )?;
     }
     read_set.to_gaf(&mut gaf_output).map_err(
-        |x| format!("Failed to write GAF to {}: {}", gaf_output_file, x)
+        |x| Error::io(format!("Failed to write GAF to {}: {}", gaf_output_file, x))
     )
 }
 

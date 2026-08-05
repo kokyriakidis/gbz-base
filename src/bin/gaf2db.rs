@@ -6,6 +6,7 @@ use gbz_base::{GBZBase, GraphInterface};
 use gbz_base::{GAFBase, GAFBaseParams, GraphReference};
 use gbz_base::db::FileType;
 use gbz_base::{db, utils};
+use gbz_base::{Error, Result};
 
 use gbz::GBZ;
 
@@ -15,7 +16,7 @@ use getopts::Options;
 
 //-----------------------------------------------------------------------------
 
-fn main() -> Result<(), String> {
+fn main() -> Result<()> {
     eprintln!("This tool has been deprecated. Please use `gaf-base compress` instead.");
     eprintln!();
 
@@ -28,9 +29,9 @@ fn main() -> Result<(), String> {
     if binaries::file_exists(&config.db_file) {
         if config.overwrite {
             eprintln!("Overwriting database {}", config.db_file.display());
-            fs::remove_file(&config.db_file).map_err(|x| x.to_string())?;
+            fs::remove_file(&config.db_file)?;
         } else {
-            return Err(format!("Database {} already exists", config.db_file.display()));
+            return Err(Error::invalid_query(format!("Database {} already exists", config.db_file.display())));
         }
     }
 
@@ -39,7 +40,7 @@ fn main() -> Result<(), String> {
         match db::identify_file(graph_file) {
             FileType::Gbz => {
                 eprintln!("Loading GBZ graph {}", graph_file.display());
-                let graph: GBZ = serialize::load_from(graph_file).map_err(|x| x.to_string())?;
+                let graph: GBZ = serialize::load_from(graph_file)?;
                 GAFBase::create_from_files(
                     &config.gaf_file, config.gbwt_file.as_deref(), &config.db_file,
                     GraphReference::Gbz(&graph), &config.params
@@ -47,8 +48,7 @@ fn main() -> Result<(), String> {
             },
             FileType::Version(v) => {
                 if v != GBZBase::VERSION {
-                    let msg = format!("File {} is {}; expected {}", graph_file.display(), v, GBZBase::VERSION);
-                    return Err(msg);
+                    return Err(Error::unsupported(format!("File {} is {}; expected {}", graph_file.display(), v, GBZBase::VERSION)));
                 }
                 eprintln!("Opening GBZ-base {}", graph_file.display());
                 let database = GBZBase::open(graph_file)?;
@@ -59,7 +59,7 @@ fn main() -> Result<(), String> {
                 )?;
             },
             _ => {
-                return Err(format!("File {} is not a valid graph", graph_file.display()));
+                return Err(Error::unsupported(format!("File {} is not a valid graph", graph_file.display())));
             }
         };
     } else {

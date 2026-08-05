@@ -33,6 +33,7 @@
 //! The order of optional fields is not preserved.
 
 use crate::{Subgraph, Mapping, Difference};
+use crate::error::{Error, Result};
 use crate::formats::{self, TypedField};
 use crate::utils::{self, PathStartSource};
 
@@ -202,28 +203,28 @@ impl Alignment {
     }
 
     // Parses a string field from a GAF field.
-    fn parse_string(field: &[u8], field_name: &str) -> Result<String, String> {
+    fn parse_string(field: &[u8], field_name: &str) -> Result<String> {
         String::from_utf8(field.to_vec()).map_err(|err| {
-            format!("Invalid {}: {}", field_name, err)
+            Error::invalid_data(format!("Invalid {}: {}", field_name, err))
         })
     }
 
     // Parses an unsigned integer from a GAF field.
     // Returns `0` if the value is missing.
-    fn parse_usize(field: &[u8], field_name: &str) -> Result<usize, String> {
+    fn parse_usize(field: &[u8], field_name: &str) -> Result<usize> {
         if field == Self::MISSING_VALUE {
             return Ok(0);
         }
         let number = str::from_utf8(field).map_err(|err| {
-            format!("Invalid {}: {}", field_name, err)
+            Error::invalid_data(format!("Invalid {}: {}", field_name, err))
         })?;
         number.parse().map_err(|err| {
-            format!("Invalid {}: {}", field_name, err)
+            Error::invalid_data(format!("Invalid {}: {}", field_name, err))
         })
     }
 
     // Parses an interval from two GAF fields.
-    fn parse_interval(start: &[u8], end: &[u8]) -> Result<Range<usize>, String> {
+    fn parse_interval(start: &[u8], end: &[u8]) -> Result<Range<usize>> {
         let start = Self::parse_usize(start, "interval start")?;
         let end = Self::parse_usize(end, "interval end")?;
         Ok(start..end)
@@ -231,23 +232,23 @@ impl Alignment {
 
     // Parses an orientation from a GAF field.
     // Returns [`Orientation::Forward`] if the value is missing.
-    fn parse_orientation(field: &[u8], field_name: &str) -> Result<Orientation, String> {
+    fn parse_orientation(field: &[u8], field_name: &str) -> Result<Orientation> {
         if field == Self::MISSING_VALUE {
             return Ok(Orientation::Forward);
         }
         if field.len() != 1 {
-            return Err(format!("Invalid {}: {}", field_name, String::from_utf8_lossy(field)));
+            return Err(Error::invalid_data(format!("Invalid {}: {}", field_name, String::from_utf8_lossy(field))));
         }
         match field[0] {
             b'+' => Ok(Orientation::Forward),
             b'-' => Ok(Orientation::Reverse),
-            _ => Err(format!("Invalid {}: {}", field_name, String::from_utf8_lossy(field))),
+            _ => Err(Error::invalid_data(format!("Invalid {}: {}", field_name, String::from_utf8_lossy(field)))),
         }
     }
 
     // Parses an oriented path from a GAF field.
     // Returns an empty path if the value is missing.
-    fn parse_path(field: &[u8]) -> Result<Vec<usize>, String> {
+    fn parse_path(field: &[u8]) -> Result<Vec<usize>> {
         let mut result = Vec::new();
         if field == Self::MISSING_VALUE {
             return Ok(result);
@@ -258,14 +259,14 @@ impl Alignment {
             let orientation = match field[start] {
                 b'>' => Orientation::Forward,
                 b'<' => Orientation::Reverse,
-                _ => return Err(format!("Invalid segment orientation: {}", String::from_utf8_lossy(field))),
+                _ => return Err(Error::invalid_data(format!("Invalid segment orientation: {}", String::from_utf8_lossy(field)))),
             };
             start += 1;
             let end = field[start..].iter().position(|&c| c == b'>' || c == b'<').map_or(field.len(), |x| start + x);
             let node = str::from_utf8(&field[start..end]).map_err(|err| {
-                format!("Invalid segment name: {}", err)
+                Error::invalid_data(format!("Invalid segment name: {}", err))
             })?.parse().map_err(|_| {
-                String::from("Only numerical segment names are supported")
+                Error::invalid_data("Only numerical segment names are supported")
             })?;
             result.push(support::encode_node(node, orientation));
             start = end;
@@ -274,12 +275,12 @@ impl Alignment {
     }
 
     // Parses a pair name from the value of a typed field.
-    fn parse_pair(value: Vec<u8>, is_next: bool, output: &mut Option<PairedRead>) -> Result<(), String> {
+    fn parse_pair(value: Vec<u8>, is_next: bool, output: &mut Option<PairedRead>) -> Result<()> {
         if output.is_some() {
-            return Err(String::from("Multiple pair fields"));
+            return Err(Error::invalid_data("Multiple pair fields"));
         }
         let name = String::from_utf8(value).map_err(|err| {
-            format!("Invalid pair name: {}", err)
+            Error::invalid_data(format!("Invalid pair name: {}", err))
         })?;
         *output = Some(PairedRead {
             name,
@@ -299,7 +300,7 @@ impl Alignment {
     /// If a difference string is present, some numerical fields will be recalculated from it.
     /// These include interval ends on both the query and the target, as well as the number of matches and edits.
     /// This behavior is justified, because some aligners may not calculate these values correctly.
-    pub fn from_gaf(line: &[u8]) -> Result<Self, String> {
+    pub fn from_gaf(line: &[u8]) -> Result<Self> {
         // Check for an endline character which may be present.
         let line = if line.last() == Some(&b'\n') {
             &line[..line.len() - 1]
@@ -312,7 +313,7 @@ impl Alignment {
         if fields.len() < Self::MANDATORY_FIELDS {
             let line = String::from_utf8_lossy(line);
             let message = format!("GAF line with fewer than {} fields: {}", Self::MANDATORY_FIELDS, line);
-            return Err(message);
+            return Err(Error::invalid_data(message));
         }
 
         // Query sequence.
@@ -323,7 +324,7 @@ impl Alignment {
         // Target path.
         let orientation = Self::parse_orientation(fields[4], "target orientation")?;
         let mut path = Self::parse_path(fields[5]).map_err(|err| {
-            format!("Invalid target path: {}", err)
+            Error::invalid_data(format!("Invalid target path: {}", err))
         })?;
         if orientation == Orientation::Reverse {
             support::reverse_path_in_place(&mut path);
@@ -353,29 +354,29 @@ impl Alignment {
             match parsed {
                 TypedField::Int([b'A', b'S'], value) => {
                     if score.is_some() {
-                        return Err(String::from("Multiple alignment score fields"));
+                        return Err(Error::invalid_data("Multiple alignment score fields"));
                     }
                     score = Some(value);
                 },
                 TypedField::String([b'b', b'q'], value) => {
                     if !base_quality.is_empty() {
-                        return Err(String::from("Multiple base quality fields"));
+                        return Err(Error::invalid_data("Multiple base quality fields"));
                     }
                     if value.len() != seq_len {
                         let msg = format!("Quality string length {} does not match query sequence length {}", value.len(), seq_len);
-                        return Err(msg);
+                        return Err(Error::invalid_data(msg));
                     }
                     base_quality = value;
                 },
                 TypedField::String([b'c', b's'], value) => {
                     if !difference.is_empty() {
-                        return Err(String::from("Multiple difference fields"));
+                        return Err(Error::invalid_data("Multiple difference fields"));
                     }
                     difference = Difference::parse_normalized(&value)?;
                 },
                 TypedField::Bool([b'p', b'd'], value) => {
                     if properly_paired.is_some() {
-                        return Err(String::from("Multiple properly paired fields"));
+                        return Err(Error::invalid_data("Multiple properly paired fields"));
                     }
                     properly_paired = Some(value);
                 },
@@ -400,7 +401,7 @@ impl Alignment {
                     let target_start = Self::parse_usize(fields[7], "target interval start")?;
                     target_start..target_start
                 } else {
-                    return Err(String::from("Target interval end cannot be parsed or inferred from the difference string"));
+                    return Err(Error::invalid_data("Target interval end cannot be parsed or inferred from the difference string"));
                 }
             },
         };
@@ -520,20 +521,20 @@ impl Alignment {
     /// Validates the internal consistency of the alignment.
     ///
     /// Returns an error message if the alignment is inconsistent.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<()> {
         // Check that intervals are valid.
         if self.seq_interval.start > self.seq_interval.end || self.seq_interval.end > self.seq_len {
-            return Err(format!("Query sequence interval {}..{} for a sequence of length {}", self.seq_interval.start, self.seq_interval.end, self.seq_len));
+            return Err(Error::invalid_data(format!("Query sequence interval {}..{} for a sequence of length {}", self.seq_interval.start, self.seq_interval.end, self.seq_len)));
         }
         if self.path_interval.start > self.path_interval.end || self.path_interval.end > self.path_len {
-            return Err(format!("Target path interval {}..{} for a path of length {}", self.path_interval.start, self.path_interval.end, self.path_len));
+            return Err(Error::invalid_data(format!("Target path interval {}..{} for a path of length {}", self.path_interval.start, self.path_interval.end, self.path_len)));
         }
 
         // Check that the target path is consistent with the path length and interval.
         if let Some(path) = self.target_path() {
             // This check also guarantees that the path interval is empty if the path is empty.
             if path.is_empty() && self.path_len > 0 {
-                return Err(String::from("Empty target path with a non-empty path length"));
+                return Err(Error::invalid_data("Empty target path with a non-empty path length"));
             }
             // TODO: We could check that the path length matches the sum of node lengths if we had access to a graph here.
         }
@@ -542,16 +543,16 @@ impl Alignment {
         if !self.difference.is_empty() {
             let (query_len, target_len, num_matches, num_edits) = Difference::stats(&self.difference);
             if query_len != self.seq_interval.len() {
-                return Err(format!("Query interval length {} according to the difference string, but {} in the alignment", query_len, self.seq_interval.len()));
+                return Err(Error::invalid_data(format!("Query interval length {} according to the difference string, but {} in the alignment", query_len, self.seq_interval.len())));
             }
             if target_len != self.path_interval.len() {
-                return Err(format!("Target path interval length {} according to the difference string, but {} in the alignment", target_len, self.path_interval.len()));
+                return Err(Error::invalid_data(format!("Target path interval length {} according to the difference string, but {} in the alignment", target_len, self.path_interval.len())));
             }
             if num_matches != self.matches {
-                return Err(format!("Number of matches {} according to the difference string, but {} in the alignment", num_matches, self.matches));
+                return Err(Error::invalid_data(format!("Number of matches {} according to the difference string, but {} in the alignment", num_matches, self.matches)));
             }
             if num_edits != self.edits {
-                return Err(format!("Number of edits {} according to the difference string, but {} in the alignment", num_edits, self.edits));
+                return Err(Error::invalid_data(format!("Number of edits {} according to the difference string, but {} in the alignment", num_edits, self.edits)));
             }
         }
 
@@ -669,7 +670,7 @@ impl Alignment {
     // Decodes a difference string from the iterator until an End value.
     // Also needs the underlying slice for decoding insertions.
     // Returns an error if the if there is no End value.
-    fn decode_difference_from(encoded: &[u8], decoder: &mut RLEIter) -> Result<Vec<Difference>, String> {
+    fn decode_difference_from(encoded: &[u8], decoder: &mut RLEIter) -> Result<Vec<Difference>> {
         let mut result: Vec<Difference> = Vec::new();
         while let Some(run) = decoder.next() {
             match run.value {
@@ -678,7 +679,7 @@ impl Alignment {
                 2 => {
                     let offset = decoder.offset();
                     for _ in 0..run.len {
-                        let _ = decoder.byte().ok_or_else(|| String::from("Missing insertion base"))?;
+                        let _ = decoder.byte().ok_or_else(|| Error::invalid_data("Missing insertion base"))?;
                     }
                     let encoded = &encoded[offset..offset + run.len];
                     let seq = utils::decode_sequence(encoded);
@@ -688,10 +689,10 @@ impl Alignment {
                 4 => {
                     return Ok(result);
                 },
-                _ => return Err(format!("Invalid difference string operation: {}", run.value)),
+                _ => return Err(Error::invalid_data(format!("Invalid difference string operation: {}", run.value))),
             }
         }
-        Err(String::from("Encoded difference string ended without an End value"))
+        Err(Error::invalid_data("Encoded difference string ended without an End value"))
     }
 }
 
@@ -864,17 +865,17 @@ impl Alignment {
     }
 
     // Extends the given fragment with the next mapping of the same original alignment.
-    fn extend(&mut self, mapping: Mapping) -> Result<(), String> {
+    fn extend(&mut self, mapping: Mapping) -> Result<()> {
         // Start by updating the difference string.
         if self.seq_interval.is_empty() && self.path_interval.is_empty() {
             // If we started with a gap, `is_unaligned()` would be true.
             if !self.difference.is_empty() {
-                return Err(String::from("Cannot extend an unaligned fragment with a non-empty difference string"));
+                return Err(Error::internal("Cannot extend an unaligned fragment with a non-empty difference string"));
             }
             self.difference.push(mapping.edit().clone());
         } else {
             if self.difference.is_empty() {
-                return Err(String::from("Cannot extend an aligned fragment without a difference string"));
+                return Err(Error::internal("Cannot extend an aligned fragment without a difference string"));
             }
             if !self.difference.last_mut().unwrap().try_merge(mapping.edit()) {
                 self.difference.push(mapping.edit().clone());
@@ -883,14 +884,14 @@ impl Alignment {
 
         // Update the query sequence.
         if mapping.seq_interval().end > self.seq_len {
-            return Err(String::from("Cannot extend a fragment beyond the query sequence length"));
+            return Err(Error::internal("Cannot extend a fragment beyond the query sequence length"));
         }
         if self.seq_interval.is_empty() {
             // Either the first mapping or we only have deletions so far.
             self.seq_interval = mapping.seq_interval().clone();
         } else {
             if mapping.seq_interval().start != self.seq_interval.end {
-                return Err(String::from("Cannot append a non-contiguous query interval"));
+                return Err(Error::internal("Cannot append a non-contiguous query interval"));
             }
             self.seq_interval.end = mapping.seq_interval().end;
         }
@@ -898,7 +899,7 @@ impl Alignment {
         // TODO: enum?
         // Determine how we are extending the alignment.
         let target_path = self.target_path().ok_or_else(||
-            String::from("Cannot extend a fragment without an explicit target path")
+            Error::internal("Cannot extend a fragment without an explicit target path")
         )?;
         let last_node = target_path.last().copied();
         let path_left = self.path_len.saturating_sub(self.path_interval.end);
@@ -927,7 +928,7 @@ impl Alignment {
         } else if continues_in_same_node {
             self.path_interval.end += mapping.target_len();
         } else {
-            return Err(String::from("Cannot append a non-contiguous target interval"));
+            return Err(Error::internal("Cannot append a non-contiguous target interval"));
         }
 
         Ok(())
@@ -1005,7 +1006,7 @@ impl Alignment {
     /// assert_eq!(clipped[1].path_interval, 0..1);
     /// assert_eq!(clipped[1].difference, vec![Difference::Match(1)]);
     /// ```
-    pub fn clip<'a>(&self, subgraph: &Subgraph, sequence_len: Arc<impl Fn(usize) -> Option<usize> + 'a>) -> Result<Vec<Alignment>, String> {
+    pub fn clip<'a>(&self, subgraph: &Subgraph, sequence_len: Arc<impl Fn(usize) -> Option<usize> + 'a>) -> Result<Vec<Alignment>> {
         let mut result = Vec::new();
         if self.is_unaligned() || !self.has_non_empty_target_path() || self.difference.is_empty() {
             return Ok(result);
@@ -1438,14 +1439,14 @@ impl AlignmentBlock {
         alignments: &[Alignment],
         source: &mut PathStartSource,
         first_id: usize, min_handle: Option<usize>
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Vec<u8>> {
         let base_node = min_handle.unwrap_or(0);
         let mut encoder = ByteCode::new();
         for (i, aln) in alignments.iter().enumerate() {
             let node_id = if let Some(path) = aln.target_path() {
                 path.first().copied().unwrap_or(ENDMARKER)
             } else {
-                return Err(format!("Line {}: Cannot compute GBWT start for an alignment without an explicit target path", first_id + i));
+                return Err(Error::invalid_data(format!("Line {}: Cannot compute GBWT start for an alignment without an explicit target path", first_id + i)));
             };
 
             // GBWT start as (node - min_handle, offset).
@@ -1453,26 +1454,26 @@ impl AlignmentBlock {
                 encoder.write(start.node - base_node);
                 encoder.write(start.offset);
             } else if !encoder.is_empty() {
-                return Err(format!("Line {}: Unaligned read in a block with aligned reads", first_id + i));
+                return Err(Error::invalid_data(format!("Line {}: Unaligned read in a block with aligned reads", first_id + i)));
             }
         }
         Ok(Vec::from(encoder))
     }
 
     // TODO: Somewhere else?
-    fn zstd_compress(data: &[u8]) -> Result<Vec<u8>, String> {
+    fn zstd_compress(data: &[u8]) -> Result<Vec<u8>> {
         let mut encoder = ZstdEncoder::new(Vec::new(), Self::COMPRESSION_LEVEL).unwrap();
-        encoder.write_all(data).map_err(|err| format!("Zstd compression error: {}", err))?;
-        encoder.finish().map_err(|err| format!("Zstd compression error: {}", err))
+        encoder.write_all(data).map_err(|err| Error::internal(format!("Zstd compression error: {}", err)))?;
+        encoder.finish().map_err(|err| Error::internal(format!("Zstd compression error: {}", err)))
     }
 
-    fn rans_compress(data: &[u8]) -> Result<Vec<u8>, String> {
+    fn rans_compress(data: &[u8]) -> Result<Vec<u8>> {
         // TODO: Where do we get the parameters?
         let flags = RANSFlags::first_order().with_rle();
-        htscodecs_wrapper::rans_compress(data, flags)
+        htscodecs_wrapper::rans_compress(data, flags).map_err(Error::internal)
     }
 
-    fn compress_names_pairs(alignments: &[Alignment]) -> Result<Vec<u8>, String> {
+    fn compress_names_pairs(alignments: &[Alignment]) -> Result<Vec<u8>> {
         let mut names: Vec<u8> = Vec::new();
         for aln in alignments.iter() {
             // Read name as a 0-terminated string.
@@ -1487,7 +1488,7 @@ impl AlignmentBlock {
         Self::zstd_compress(&names)
     }
 
-    fn compress_quality_strings(alignments: &[Alignment]) -> Result<Vec<u8>, String> {
+    fn compress_quality_strings(alignments: &[Alignment]) -> Result<Vec<u8>> {
         let mut quality_strings: Vec<u8> = Vec::new();
         for aln in alignments.iter() {
             // Concantenated quality strings.
@@ -1502,7 +1503,7 @@ impl AlignmentBlock {
     }
 
     // TODO: Instead of TAG:TYPE:VALUE, we could drop the separators.
-    fn compress_optional_fields(alignments: &[Alignment]) -> Result<Vec<u8>, String> {
+    fn compress_optional_fields(alignments: &[Alignment]) -> Result<Vec<u8>> {
         let mut optional: Vec<u8> = Vec::new();
         for aln in alignments.iter() {
             // Optional fields as a sequence of typed fields.
@@ -1536,7 +1537,7 @@ impl AlignmentBlock {
     /// * The block contains a mix of aligned and unaligned reads.
     /// * The source computes GBWT starts on the fly, but an alignment does not store the target path explicitly.
     /// * Compression fails.
-    pub fn new(alignments: &[Alignment], source: &mut PathStartSource, first_id: usize) -> Result<Self, String> {
+    pub fn new(alignments: &[Alignment], source: &mut PathStartSource, first_id: usize) -> Result<Self> {
         let min_handle = alignments.iter().map(|aln| aln.min_handle()).min().flatten();
         let max_handle = alignments.iter().map(|aln| aln.max_handle()).max().flatten();
         let read_length = Self::expected_read_length(alignments);
@@ -1607,7 +1608,7 @@ impl AlignmentBlock {
         self.alignments == 0
     }
 
-    fn decompress_gbwt_starts(&self, result: &mut [Alignment]) -> Result<(), String> {
+    fn decompress_gbwt_starts(&self, result: &mut [Alignment]) -> Result<()> {
         if self.min_handle.is_none() {
             return Ok(());
         }
@@ -1615,10 +1616,10 @@ impl AlignmentBlock {
         let mut decoder: ByteCodeIter<'_> = ByteCodeIter::new(&self.gbwt_starts[..]);
         for (i, aln) in result.iter_mut().enumerate() {
             let start = decoder.next().ok_or_else(||
-                format!("Missing GBWT start for alignment {}", i)
+                Error::invalid_data(format!("Missing GBWT start for alignment {}", i))
             )?;
             let offset = decoder.next().ok_or_else(||
-                format!("Missing GBWT offset for alignment {}", i)
+                Error::invalid_data(format!("Missing GBWT offset for alignment {}", i))
             )?;
             aln.path = TargetPath::StartPosition(Pos::new(start + base_node, offset));
         }
@@ -1626,20 +1627,20 @@ impl AlignmentBlock {
     }
 
     // TODO: Somewhere else?
-    fn zstd_decompress(data: &[u8]) -> Result<Vec<u8>, String> {
-        let mut decoder = ZstdDecoder::new(data).map_err(|err| format!("Zstd decompression error: {}", err))?;
+    fn zstd_decompress(data: &[u8]) -> Result<Vec<u8>> {
+        let mut decoder = ZstdDecoder::new(data).map_err(|err| Error::invalid_data(format!("Zstd decompression error: {}", err)))?;
         let mut buffer = Vec::new();
-        decoder.read_to_end(&mut buffer).map_err(|err| format!("Zstd decompression error: {}", err))?;
+        decoder.read_to_end(&mut buffer).map_err(|err| Error::invalid_data(format!("Zstd decompression error: {}", err)))?;
         Ok(buffer)
     }
 
-    fn decompress_names_pairs(&self, result: &mut [Alignment]) -> Result<(), String> {
+    fn decompress_names_pairs(&self, result: &mut [Alignment]) -> Result<()> {
         let buffer = Self::zstd_decompress(&self.names[..])?;
         let mut iter = buffer.split(|&c| c == 0);
         for (i, aln) in result.iter_mut().enumerate() {
-            let name = iter.next().ok_or_else(|| format!("Missing name for alignment {}", i))?;
+            let name = iter.next().ok_or_else(|| Error::invalid_data(format!("Missing name for alignment {}", i)))?;
             aln.name = String::from_utf8_lossy(name).to_string();
-            let pair_name = iter.next().ok_or_else(|| format!("Missing pair name for alignment {}", i))?;
+            let pair_name = iter.next().ok_or_else(|| Error::invalid_data(format!("Missing pair name for alignment {}", i)))?;
             if !pair_name.is_empty() {
                 aln.pair = Some(PairedRead {
                     name: String::from_utf8_lossy(pair_name).to_string(),
@@ -1653,7 +1654,7 @@ impl AlignmentBlock {
         Ok(())
     }
 
-    fn decompress_quality_strings(&self, result: &mut [Alignment]) -> Result<(), String> {
+    fn decompress_quality_strings(&self, result: &mut [Alignment]) -> Result<()> {
         if self.quality_strings.is_empty() {
             // An empty blob indicates no quality strings.
             return Ok(());
@@ -1668,33 +1669,34 @@ impl AlignmentBlock {
             }
         }).sum();
 
-        let buffer = htscodecs_wrapper::rans_decompress(&self.quality_strings[..], Some(expected_total_length))?;
+        let buffer = htscodecs_wrapper::rans_decompress(&self.quality_strings[..], Some(expected_total_length))
+            .map_err(Error::invalid_data)?;
         let mut buffer_offset = 0;
         for (i, aln) in result.iter_mut().enumerate() {
             if self.flags.get(i, Flags::FLAG_HAS_BASE_QUALITY) {
                 let read_len = aln.seq_len;
                 let quality = buffer.get(buffer_offset..buffer_offset + read_len).ok_or_else(
-                    || format!("Missing quality string for alignment {}", i)
+                    || Error::invalid_data(format!("Missing quality string for alignment {}", i))
                 )?;
                 aln.base_quality = quality.to_vec();
                 buffer_offset += read_len;
             }
         }
         if buffer_offset != buffer.len() {
-            return Err(format!("Extra data in quality strings blob: expected offset {}, got {}", buffer_offset, buffer.len()));
+            return Err(Error::invalid_data(format!("Extra data in quality strings blob: expected offset {}, got {}", buffer_offset, buffer.len())));
         }
 
         Ok(())
     }
 
-    fn decompress_difference_strings(&self, result: &mut [Alignment]) -> Result<(), String> {
+    fn decompress_difference_strings(&self, result: &mut [Alignment]) -> Result<()> {
         // TODO: Also consider using an empty blob for no difference strings, as we do for quality strings.
 
         let mut decoder = RLEIter::with_sigma(&self.difference_strings[..], Difference::NUM_TYPES);
         for (i, aln) in result.iter_mut().enumerate() {
             if !self.flags.get(i, Flags::FLAG_EXACT_ALIGNMENT) {
                 let res = Alignment::decode_difference_from(&self.difference_strings, &mut decoder);
-                aln.difference = res.map_err(|err| format!("Missing difference string for alignment {}: {}", i, err))?;
+                aln.difference = res.map_err(|err| Error::invalid_data(format!("Missing difference string for alignment {}: {}", i, err)))?;
             }
             // If the alignment is exact, we will reconstruct the difference string once we know
             // the length of the aligned interval.
@@ -1702,7 +1704,7 @@ impl AlignmentBlock {
         Ok(())
     }
 
-    fn decompress_numbers(&self, result: &mut [Alignment]) -> Result<(), String> {
+    fn decompress_numbers(&self, result: &mut [Alignment]) -> Result<()> {
         let mut decoder = ByteCodeIter::new(&self.numbers[..]);
         for (i, aln) in result.iter_mut().enumerate() {
             let full_alignment = self.flags.get(i, Flags::FLAG_FULL_ALIGNMENT);
@@ -1720,13 +1722,13 @@ impl AlignmentBlock {
             if let Some(len) = self.read_length {
                 query_len = len;
             } else if !stored_difference_string {
-                query_len = decoder.next().ok_or_else(|| format!("Missing query sequence aligned length for alignment {}", i))?;
+                query_len = decoder.next().ok_or_else(|| Error::invalid_data(format!("Missing query sequence aligned length for alignment {}", i)))?;
             }
             let (query_left, query_right) = if full_alignment {
                 (0, 0)
             } else {
-                let query_left = decoder.next().ok_or_else(|| format!("Missing query sequence left flank for alignment {}", i))?;
-                let query_right = decoder.next().ok_or_else(|| format!("Missing query sequence right flank for alignment {}", i))?;
+                let query_left = decoder.next().ok_or_else(|| Error::invalid_data(format!("Missing query sequence left flank for alignment {}", i)))?;
+                let query_right = decoder.next().ok_or_else(|| Error::invalid_data(format!("Missing query sequence right flank for alignment {}", i)))?;
                 (query_left, query_right)
             };
             if self.read_length.is_some() {
@@ -1740,9 +1742,9 @@ impl AlignmentBlock {
             if exact_alignment {
                 target_len = query_len;
             } else if !stored_difference_string {
-                target_len = decoder.next().ok_or_else(|| format!("Missing target path aligned length for alignment {}", i))?;
+                target_len = decoder.next().ok_or_else(|| Error::invalid_data(format!("Missing target path aligned length for alignment {}", i)))?;
             }
-            let target_left = decoder.next().ok_or_else(|| format!("Missing target path left flank for alignment {}", i))?;
+            let target_left = decoder.next().ok_or_else(|| Error::invalid_data(format!("Missing target path left flank for alignment {}", i)))?;
             let target_right = 0; // We can determine the length of the right flank later.
             aln.path_interval = target_left..(target_left + target_len);
             aln.path_len = target_len + target_left + target_right;
@@ -1752,15 +1754,15 @@ impl AlignmentBlock {
                 aln.matches = query_len;
                 aln.edits = 0;
             } else if !stored_difference_string {
-                aln.matches = decoder.next().ok_or_else(|| format!("Missing number of matches for alignment {}", i))?;
-                aln.edits = decoder.next().ok_or_else(|| format!("Missing number of edits for alignment {}", i))?;
+                aln.matches = decoder.next().ok_or_else(|| Error::invalid_data(format!("Missing number of matches for alignment {}", i)))?;
+                aln.edits = decoder.next().ok_or_else(|| Error::invalid_data(format!("Missing number of edits for alignment {}", i)))?;
             }
             if self.flags.get(i, Flags::FLAG_HAS_MAPQ) {
-                aln.mapq = Some(decoder.next().ok_or_else(|| format!("Missing mapping quality for alignment {}", i))?);
+                aln.mapq = Some(decoder.next().ok_or_else(|| Error::invalid_data(format!("Missing mapping quality for alignment {}", i)))?);
             }
             if self.flags.get(i, Flags::FLAG_HAS_SCORE) {
                 aln.score = Some(Alignment::decode_signed(&mut decoder).ok_or_else(||
-                    format!("Missing alignment score for alignment {}", i)
+                    Error::invalid_data(format!("Missing alignment score for alignment {}", i))
                 )?);
             }
         }
@@ -1768,7 +1770,7 @@ impl AlignmentBlock {
         Ok(())
     }
 
-    fn decompress_optional_fields(&self, result: &mut [Alignment]) -> Result<(), String> {
+    fn decompress_optional_fields(&self, result: &mut [Alignment]) -> Result<()> {
         if self.optional.is_empty() {
             // An empty blob indicates no optional fields.
             return Ok(());
@@ -1777,7 +1779,7 @@ impl AlignmentBlock {
         let buffer = Self::zstd_decompress(&self.optional[..])?;
         let mut iter = buffer.split(|&c| c == 0);
         for (i, aln) in result.iter_mut().enumerate() {
-            let optional = iter.next().ok_or_else(|| format!("Missing optional fields for alignment {}", i))?;
+            let optional = iter.next().ok_or_else(|| Error::invalid_data(format!("Missing optional fields for alignment {}", i)))?;
             let fields = optional.split(|&c| c == b'\t');
             for field in fields {
                 let parsed = TypedField::parse(field)?;
@@ -1801,7 +1803,7 @@ impl AlignmentBlock {
     /// # Errors
     ///
     /// Returns an error if decompression fails or if data required for decoding the block is missing.
-    pub fn decode(&self) -> Result<Vec<Alignment>, String> {
+    pub fn decode(&self) -> Result<Vec<Alignment>> {
         let mut result = vec![Alignment::default(); self.len()];
 
         // In a block of aligned reads, we have a GBWT start for every alignment.

@@ -6,6 +6,7 @@
 //! All other paths within the subgraph can also be extracted, but they will not have any true metadata associated with them.
 
 use crate::{GBZRecord, GBZPath};
+use crate::error::{Error, Result};
 use crate::{GraphInterface, GraphReference};
 use crate::PathIndex;
 use crate::{SubgraphQuery, HaplotypeOutput, SnarlOutput};
@@ -219,16 +220,16 @@ impl Subgraph {
         graph: &GBZ,
         path_index: &PathIndex,
         query_pos: &FullPathName
-    ) -> Result<(PathPosition, FullPathName), String> {
+    ) -> Result<(PathPosition, FullPathName)> {
         let path = GBZPath::with_name(graph, query_pos).ok_or_else(||
-            format!("Cannot find a path covering {}", query_pos)
+            Error::not_found(format!("Cannot find a path covering {}", query_pos))
         )?;
         // Transform the offset relative to the haplotype to the offset relative to the path.
         let query_offset = query_pos.fragment - path.name.fragment;
 
         // Path id to an indexed position.
         let index_offset = path_index.path_to_offset(path.handle).ok_or_else(||
-            format!("Path {} has not been indexed for random access", path.name())
+            Error::invalid_query(format!("Path {} has not been indexed for random access", path.name()))
         )?;
         let (path_offset, pos) = path_index.indexed_position(index_offset, query_offset).unwrap();
 
@@ -301,11 +302,11 @@ impl Subgraph {
         &mut self,
         graph: &'reference mut GraphInterface<'graph>,
         query_pos: &FullPathName
-    ) -> Result<(PathPosition, FullPathName), String> {
+    ) -> Result<(PathPosition, FullPathName)> {
         let path = graph.find_path(query_pos)?;
-        let path = path.ok_or_else(|| format!("Cannot find a path covering {}", query_pos))?;
+        let path = path.ok_or_else(|| Error::not_found(format!("Cannot find a path covering {}", query_pos)))?;
         if !path.is_indexed {
-            return Err(format!("Path {} has not been indexed for random access", query_pos));
+            return Err(Error::invalid_query(format!("Path {} has not been indexed for random access", query_pos)));
         }
         // Transform the offset relative to the haplotype to the offset relative to the path.
         let query_offset = query_pos.fragment - path.name.fragment;
@@ -313,7 +314,7 @@ impl Subgraph {
         // Find an indexed position before the query position.
         let result = graph.indexed_position(path.handle, query_offset)?;
         let (path_offset, pos) = result.ok_or_else(||
-            format!("Path {} has not been indexed for random access", path.name())
+            Error::invalid_query(format!("Path {} has not been indexed for random access", path.name()))
         )?;
 
         self.find_path_pos(GraphReference::Db(graph), query_offset, path_offset, pos, path.name)
@@ -327,7 +328,7 @@ impl Subgraph {
         path_offset: usize,
         pos: Pos,
         path_name: FullPathName
-    ) -> Result<(PathPosition, FullPathName), String> {
+    ) -> Result<(PathPosition, FullPathName)> {
         // Iterate over the path until the query position, updating the subgraph.
         let mut path_offset = path_offset;
         let mut pos = pos;
@@ -354,7 +355,7 @@ impl Subgraph {
         }
 
         let node_offset = node_offset.ok_or_else(||
-            format!("Path {} does not contain offset {}", path_name, query_offset)
+            Error::not_found(format!("Path {} does not contain offset {}", path_name, query_offset))
         )?;
         let gbwt_pos = gbwt_pos.unwrap();
 
@@ -388,7 +389,7 @@ impl Subgraph {
         graph: GraphReference<'_, '_>,
         pos: GraphPosition,
         context: usize
-    ) -> Result<(usize, usize), String> {
+    ) -> Result<(usize, usize)> {
         // The initial node is always in the subgraph, so we might as well add it now to determine sequence length.
         let mut graph = graph;
         if !self.has_node(pos.node) {
@@ -432,9 +433,9 @@ impl Subgraph {
         start_pos: PathPosition,
         len: usize,
         context: usize
-    ) -> Result<(usize, usize), String> {
+    ) -> Result<(usize, usize)> {
         if len == 0 {
-            return Err(String::from("Interval length must be greater than 0"));
+            return Err(Error::invalid_query("Interval length must be greater than 0"));
         }
         let mut pos = start_pos.gbwt_pos();
         let mut offset = start_pos.node_offset();
@@ -451,7 +452,7 @@ impl Subgraph {
             }
             let record = self.record(pos.node).unwrap();
             if offset >= record.sequence_len() {
-                return Err(format!("Offset {} in node {} of length {}", offset, node_id, record.sequence_len()));
+                return Err(Error::not_found(format!("Offset {} in node {} of length {}", offset, node_id, record.sequence_len())));
             }
 
             // Handle the current node.
@@ -471,7 +472,7 @@ impl Subgraph {
             if let Some(next) = record.to_gbwt_record().lf(pos.offset) {
                 pos = next;
             } else {
-                return Err(format!("No successor for GBWT position ({}, {})", pos.node, pos.offset));
+                return Err(Error::invalid_data(format!("No successor for GBWT position ({}, {})", pos.node, pos.offset)));
             }
             offset = 0;
             len -= distance_to_next;
@@ -529,7 +530,7 @@ impl Subgraph {
         graph: GraphReference<'_, '_>,
         nodes: &BTreeSet<usize>,
         context: usize
-    ) -> Result<(usize, usize), String> {
+    ) -> Result<(usize, usize)> {
         // Start the graph traversal from both sides of the initial nodes.
         let mut active: BinaryHeap<Reverse<(usize, (usize, NodeSide))>> = BinaryHeap::new();
         for &node_id in nodes {
@@ -554,7 +555,7 @@ impl Subgraph {
         graph: GraphReference<'_, '_>,
         active: BinaryHeap<Reverse<(usize, (usize, NodeSide))>>,
         context: usize
-    ) -> Result<(usize, usize), String> {
+    ) -> Result<(usize, usize)> {
         self.clear_paths();
 
         let mut active = active;
@@ -622,6 +623,12 @@ impl Subgraph {
     /// * `end`: End handle (inclusive).
     /// * `limit`: Optional safety limit on the number of inserted nodes.
     ///
+    /// # Errors
+    ///
+    /// Returns an [`ErrorKind::LimitExceeded`](crate::ErrorKind::LimitExceeded) error if `limit` is given and the number of new nodes would exceed it.
+    /// A caller can respond to this by raising the limit or by narrowing the query.
+    /// Passes through any errors from accessing the graph.
+    ///
     /// # Examples
     ///
     /// ```
@@ -642,7 +649,7 @@ impl Subgraph {
     /// let expected_nodes = [14, 15, 16, 17];
     /// assert!(subgraph.node_iter().eq(expected_nodes.iter().copied()));
     /// ```
-    pub fn between_nodes(&mut self, graph: GraphReference<'_, '_>, start: usize, end: usize, limit: Option<usize>) -> Result<usize, String> {
+    pub fn between_nodes(&mut self, graph: GraphReference<'_, '_>, start: usize, end: usize, limit: Option<usize>) -> Result<usize> {
         self.clear_paths();
 
         // Active handles. We proceed to their successors but not predecessors.
@@ -662,7 +669,7 @@ impl Subgraph {
                 if let Some(limit) = limit && inserted >= limit {
                     let (start_id, start_o) = support::decode_node(start);
                     let (end_id, end_o) = support::decode_node(end);
-                    return Err(format!("Found more than {} new nodes between ({}, {}) and ({}, {})", limit, start_id, start_o, end_id, end_o));
+                    return Err(Error::limit_exceeded(format!("Found more than {} new nodes between ({}, {}) and ({}, {})", limit, start_id, start_o, end_id, end_o)));
                 }
                 self.add_node_internal(&mut graph, node_id)?;
                 inserted += 1;
@@ -699,7 +706,7 @@ impl Subgraph {
     ///
     /// # Errors
     ///
-    /// Returns an error if the graph reference is [`GraphReference::None`].
+    /// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error if the graph reference is [`GraphReference::None`].
     /// Passes through errors from accessing the graph.
     ///
     /// # Examples
@@ -732,7 +739,7 @@ impl Subgraph {
     /// let snarl_nodes = [14, 15, 16, 17];
     /// assert!(subgraph.node_iter().eq(snarl_nodes.iter().copied()));
     /// ```
-    pub fn extract_snarls(&mut self, graph: GraphReference<'_, '_>, snarls: SnarlOutput, chains: Option<&Chains>) -> Result<usize, String> {
+    pub fn extract_snarls(&mut self, graph: GraphReference<'_, '_>, snarls: SnarlOutput, chains: Option<&Chains>) -> Result<usize> {
         let mut graph = graph;
         let boundary_nodes = self.overlapping_snarls(&mut graph, snarls, chains)?;
 
@@ -746,7 +753,7 @@ impl Subgraph {
                     inserted += self.between_nodes(GraphReference::Db(graph), start, end, None)?;
                 },
                 GraphReference::None => {
-                    return Err(String::from("No graph reference provided"));
+                    return Err(Error::invalid_query("No graph reference provided"));
                 }
             }
         }
@@ -768,14 +775,16 @@ impl Subgraph {
     ///
     /// # Errors
     ///
-    /// Returns an error, if:
+    /// Returns an [`ErrorKind::NotFound`](crate::ErrorKind::NotFound) error if the graph does not contain the queried position.
     ///
-    /// * The query or the graph is invalid.
-    /// * The graph does not contain the queried position.
+    /// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error, if:
+    ///
     /// * A path index is required but not provided, or if the query path has not been indexed.
     /// * Partially overlapping snarls are requested for a node-based query with multiple nodes.
     ///   This is because the algorithm does not work correctly when there are multiple weakly connected components in the subgraph.
     /// * The query is node-based but requests reference path output.
+    ///
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the graph is inconsistent.
     ///
     /// If an error occurs, the subgraph may contain arbitrary nodes but no paths.
     ///
@@ -813,14 +822,14 @@ impl Subgraph {
     /// assert_eq!(subgraph.nodes(), 5);
     /// assert_eq!(subgraph.paths(), 3);
     /// ```
-    pub fn from_gbz(&mut self, graph: &GBZ, path_index: Option<&PathIndex>, chains: Option<&Chains>, query: &SubgraphQuery) -> Result<(), String> {
+    pub fn from_gbz(&mut self, graph: &GBZ, path_index: Option<&PathIndex>, chains: Option<&Chains>, query: &SubgraphQuery) -> Result<()> {
         if (query.snarls() != SnarlOutput::None) && chains.is_none() {
-            return Err(String::from("Top-level chains are required for extracting snarls"));
+            return Err(Error::invalid_query("Top-level chains are required for extracting snarls"));
         }
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
                 let path_index = path_index.ok_or_else(||
-                    String::from("Path index is required for path-based queries")
+                    Error::invalid_query("Path index is required for path-based queries")
                 )?;
                 let reference_path = self.path_pos_from_gbz(graph, path_index, query_pos)?;
                 self.around_position(GraphReference::Gbz(graph), reference_path.0.graph_pos(), query.context())?;
@@ -829,7 +838,7 @@ impl Subgraph {
             },
             QueryType::PathInterval(query_pos, len) => {
                 let path_index = path_index.ok_or_else(||
-                    String::from("Path index is required for path-based queries")
+                    Error::invalid_query("Path index is required for path-based queries")
                 )?;
                 let reference_path = self.path_pos_from_gbz(graph, path_index, query_pos)?;
                 self.around_interval(GraphReference::Gbz(graph), reference_path.0, *len, query.context())?;
@@ -838,10 +847,10 @@ impl Subgraph {
             },
             QueryType::Nodes(nodes) => {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
-                    return Err(String::from("Cannot output a reference path in a node-based query"));
+                    return Err(Error::invalid_query("Cannot output a reference path in a node-based query"));
                 }
                 if query.snarls() == SnarlOutput::Overlapping && nodes.len() > 1 {
-                    return Err(String::from("Overlapping snarls cannot be extracted for a node-based query with multiple nodes"));
+                    return Err(Error::invalid_query("Overlapping snarls cannot be extracted for a node-based query with multiple nodes"));
                 }
                 self.around_nodes(GraphReference::Gbz(graph), nodes, query.context())?;
                 self.extract_snarls(GraphReference::Gbz(graph), query.snarls(), chains)?;
@@ -849,7 +858,7 @@ impl Subgraph {
             },
             QueryType::Between((start, end), limit) => {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
-                    return Err(String::from("Cannot output a reference path in a node-based query"));
+                    return Err(Error::invalid_query("Cannot output a reference path in a node-based query"));
                 }
                 self.between_nodes(GraphReference::Gbz(graph), *start, *end, *limit)?;
                 self.extract_paths(None, query.output())?;
@@ -870,14 +879,17 @@ impl Subgraph {
     ///
     /// # Errors
     ///
-    /// Returns an error, if:
+    /// Returns an [`ErrorKind::NotFound`](crate::ErrorKind::NotFound) error if the graph does not contain the queried position.
     ///
-    /// * The query or the graph is invalid or if there is a database error.
-    /// * The graph does not contain the queried position.
+    /// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error, if:
+    ///
     /// * A path index is required but not provided, or if the query path has not been indexed.
     /// * Partially overlapping snarls are requested for a node-based query with multiple nodes.
     ///   This is because the algorithm does not work correctly when there are multiple weakly connected components in the subgraph.
     /// * The query is node-based but requests reference path output.
+    ///
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the graph is inconsistent.
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     ///
     /// If an error occurs, the subgraph may contain arbitrary nodes but no paths.
     ///
@@ -916,7 +928,7 @@ impl Subgraph {
     /// drop(database);
     /// fs::remove_file(&db_file).unwrap();
     /// ```
-    pub fn from_db<'reference, 'graph>(&mut self, graph: &'reference mut GraphInterface<'graph>, query: &SubgraphQuery) -> Result<(), String> {
+    pub fn from_db<'reference, 'graph>(&mut self, graph: &'reference mut GraphInterface<'graph>, query: &SubgraphQuery) -> Result<()> {
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
                 let reference_path = self.path_pos_from_db(graph, query_pos)?;
@@ -932,10 +944,10 @@ impl Subgraph {
             },
             QueryType::Nodes(nodes) => {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
-                    return Err(String::from("Cannot output a reference path in a node-based query"));
+                    return Err(Error::invalid_query("Cannot output a reference path in a node-based query"));
                 }
                 if query.snarls() == SnarlOutput::Overlapping && nodes.len() > 1 {
-                    return Err(String::from("Overlapping snarls cannot be extracted for a node-based query with multiple nodes"));
+                    return Err(Error::invalid_query("Overlapping snarls cannot be extracted for a node-based query with multiple nodes"));
                 }
                 self.around_nodes(GraphReference::Db(graph), nodes, query.context())?;
                 self.extract_snarls(GraphReference::Db(graph), query.snarls(), None)?;
@@ -943,7 +955,7 @@ impl Subgraph {
             },
             QueryType::Between((start, end), limit) => {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
-                    return Err(String::from("Cannot output a reference path in a node-based query"));
+                    return Err(Error::invalid_query("Cannot output a reference path in a node-based query"));
                 }
                 self.between_nodes(GraphReference::Db(graph), *start, *end, *limit)?;
                 self.extract_paths(None, query.output())?;
@@ -984,8 +996,8 @@ impl Subgraph {
     ///
     /// # Errors
     ///
-    /// Returns an error if no path visits the reference position.
-    /// Returns an error if reference-only output is requested without a reference path.
+    /// Returns an [`ErrorKind::Internal`](crate::ErrorKind::Internal) error if no path visits the reference position.
+    /// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error if reference-only output is requested without a reference path.
     /// Clears all path information in case of an error.
     ///
     /// # Examples
@@ -1034,7 +1046,7 @@ impl Subgraph {
         &mut self,
         reference_path: Option<(PathPosition, FullPathName)>,
         output: HaplotypeOutput
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         self.clear_paths();
 
         let ref_pos;
@@ -1106,7 +1118,7 @@ impl Subgraph {
                 self.ref_interval = Some(ref_info.path_interval(self, offset, &ref_pos));
             } else {
                 self.clear_paths();
-                return Err(String::from("Could not find the reference path"));
+                return Err(Error::internal("Could not find the reference path"));
             }
         }
 
@@ -1143,9 +1155,9 @@ impl Subgraph {
     }
 
     // Removes all paths except the reference path.
-    fn reference_only(&mut self) -> Result<(), String> {
+    fn reference_only(&mut self) -> Result<()> {
         if self.ref_id.is_none() {
-            return Err(String::from("Reference path is required for reference-only output"));
+            return Err(Error::invalid_query("Reference path is required for reference-only output"));
         }
         let ref_id = self.ref_id.unwrap();
         let ref_info = self.paths[ref_id].clone();
@@ -1155,7 +1167,7 @@ impl Subgraph {
     }
 
     // Adds a new node to the subgraph.
-    fn add_node_internal(&mut self, graph: &mut GraphReference<'_, '_>, node_id: usize) -> Result<(), String> {
+    fn add_node_internal(&mut self, graph: &mut GraphReference<'_, '_>, node_id: usize) -> Result<()> {
         let forward = graph.gbz_record(support::encode_node(node_id, Orientation::Forward))?;
         let reverse = graph.gbz_record(support::encode_node(node_id, Orientation::Reverse))?;
         self.records.insert(forward.handle(), forward);
@@ -1177,7 +1189,7 @@ impl Subgraph {
     /// # Errors
     ///
     /// Returns an error if the node does not exist in the graph.
-    pub fn add_node_from_gbz(&mut self, graph: &GBZ, node_id: usize) -> Result<(), String> {
+    pub fn add_node_from_gbz(&mut self, graph: &GBZ, node_id: usize) -> Result<()> {
         if self.has_node(node_id) {
             return Ok(());
         }
@@ -1200,7 +1212,7 @@ impl Subgraph {
     ///
     /// Returns an error if the node does not exist in the graph.
     /// Passes through any errors from the database.
-    pub fn add_node_from_db(&mut self, graph: &mut GraphInterface, node_id: usize) -> Result<(), String> {
+    pub fn add_node_from_db(&mut self, graph: &mut GraphInterface, node_id: usize) -> Result<()> {
         if self.has_node(node_id) {
             return Ok(());
         }
@@ -1247,7 +1259,7 @@ impl Subgraph {
     // If there were no chain links in the subgraph, the algorithm tries to find a top-level snarl containing the subgraph.
     fn overlapping_snarls(
         &self, graph: &mut GraphReference<'_, '_>, snarls: SnarlOutput, chains: Option<&Chains>
-    ) -> Result<BTreeSet<(usize, usize)>, String> {
+    ) -> Result<BTreeSet<(usize, usize)>> {
         let mut result = BTreeSet::new();
         if snarls == SnarlOutput::None {
             return Ok(result);
@@ -1334,7 +1346,7 @@ impl Subgraph {
 
     // Returns `true` if the given record is a snarl entry point.
     // We assume that it has a `next` link.
-    fn record_is_snarl_entry(record: &GBZRecord, graph: &mut GraphReference<'_, '_>) -> Result<bool, String> {
+    fn record_is_snarl_entry(record: &GBZRecord, graph: &mut GraphReference<'_, '_>) -> Result<bool> {
         let mut iter = record.successors();
         let Some(first_successor) = iter.next() else {
             // This should not happen.
@@ -1353,7 +1365,7 @@ impl Subgraph {
     }
 
     // Classifies the handle as a snarl exit point, other chain handle, or regular handle.
-    fn handle_type(handle: usize, graph: &mut GraphReference<'_, '_>, chains: Option<&Chains>) -> Result<HandleType, String> {
+    fn handle_type(handle: usize, graph: &mut GraphReference<'_, '_>, chains: Option<&Chains>) -> Result<HandleType> {
         let rv_handle = support::flip_node(handle);
         let rv_record = graph.gbz_record(rv_handle)?;
         if let Some(next) = Self::record_next(&rv_record, chains) {
@@ -1375,7 +1387,7 @@ impl Subgraph {
 
     // Returns the boundary nodes of the top-level snarl containing this subgraph, if any.
     // This assumes that the subgraph is connected and does not contain any `next` links.
-    fn find_covering_snarl(&self, graph: &mut GraphReference<'_, '_>, chains: Option<&Chains>) -> Result<Option<(usize, usize)>, String> {
+    fn find_covering_snarl(&self, graph: &mut GraphReference<'_, '_>, chains: Option<&Chains>) -> Result<Option<(usize, usize)>> {
         let mut visited: HashSet<usize> = HashSet::new(); // Visited node ids outside the subgraph.
         let mut active: VecDeque<usize> = VecDeque::new(); // Active node ids outside the subgraph.
         for (_, record) in self.records.iter() {
@@ -1942,15 +1954,16 @@ impl Graph for Subgraph {
         unimplemented!();
     }
 
-    fn add_node(&mut self, _: &[u8], _: &[u8]) -> Result<(), String> {
+    // These three methods use `String` as the error type, as required by the `Graph` trait.
+    fn add_node(&mut self, _: &[u8], _: &[u8]) -> std::result::Result<(), String> {
         unimplemented!();
     }
 
-    fn add_edge(&mut self, _: &[u8], _: Orientation, _: &[u8], _: Orientation) -> Result<(), String> {
+    fn add_edge(&mut self, _: &[u8], _: Orientation, _: &[u8], _: Orientation) -> std::result::Result<(), String> {
         unimplemented!();
     }
 
-    fn finalize(&mut self) -> Result<(), String> {
+    fn finalize(&mut self) -> std::result::Result<(), String> {
         Ok(())
     }
 

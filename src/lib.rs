@@ -48,9 +48,17 @@
 //!
 //! See [`GAFBase`] and [`ReadSet`] for the database interface.
 //! See [`alignment`], [`Alignment`], and [`AlignmentBlock`] for more details.
+//!
+//! # Error handling
+//!
+//! Fallible operations in this crate return an [`Error`], which combines a message with an [`ErrorKind`].
+//! The kind tells apart failures that need different responses, such as a database error and a query
+//! that exceeded a safety limit.
+//! See the [`error`] module for details.
 
 pub mod alignment;
 pub mod db;
+pub mod error;
 pub mod formats;
 pub mod gaf_sort;
 pub mod path_index;
@@ -66,6 +74,7 @@ pub use alignment::{Alignment, AlignmentBlock};
 pub use alignment::mapping::{Difference, Mapping};
 pub use db::{GBZBase, GBZPath, GBZRecord, GraphInterface, GraphReference};
 pub use db::{GAFBase, GAFBaseParams};
+pub use error::{Error, ErrorKind, Result};
 pub use path_index::PathIndex;
 pub use read_set::{ReadSet, AlignmentOutput};
 pub use subgraph::Subgraph;
