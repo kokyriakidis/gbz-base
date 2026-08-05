@@ -1390,7 +1390,7 @@ impl Subgraph {
     fn find_covering_snarl(&self, graph: &mut GraphReference<'_, '_>, chains: Option<&Chains>) -> Result<Option<(usize, usize)>> {
         let mut visited: HashSet<usize> = HashSet::new(); // Visited node ids outside the subgraph.
         let mut active: VecDeque<usize> = VecDeque::new(); // Active node ids outside the subgraph.
-        for (_, record) in self.records.iter() {
+        for record in self.records.values() {
             for next in record.successors() {
                 let node_id = support::node_id(next);
                 if !self.has_handle(next) && visited.insert(node_id) {
@@ -1835,7 +1835,7 @@ impl Subgraph {
     pub fn write_json<T: Write>(&self, output: &mut T, cigar: bool) -> io::Result<()> {
         // Nodes.
         let mut nodes: Vec<JSONValue> = Vec::new();
-        for (_, record) in self.records.iter() {
+        for record in self.records.values() {
             let (id, orientation) = support::decode_node(record.handle());
             if orientation == Orientation::Reverse {
                 continue;

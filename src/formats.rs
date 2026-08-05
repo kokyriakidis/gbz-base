@@ -444,11 +444,11 @@ pub fn write_gfa_walk<T: Write>(path: &[usize], metadata: &WalkMetadata, output:
     buffer.push(b'\t');
     append_walk(&mut buffer, path);
     if let Some(weight) = metadata.weight {
-        let field = TypedField::Int([b'W', b'T'], weight as isize);
+        let field = TypedField::Int(*b"WT", weight as isize);
         field.append_to(&mut buffer, true);
     }
     if let Some(cigar) = &metadata.cigar {
-        let field = TypedField::String([b'C', b'G'], cigar.as_bytes().to_vec());
+        let field = TypedField::String(*b"CG", cigar.as_bytes().to_vec());
         field.append_to(&mut buffer, true);
     }
     buffer.push(b'\n');

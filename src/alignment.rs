@@ -195,7 +195,18 @@ impl Alignment {
     const MISSING_MAPQ: usize = 255;
 
     // The field is empty and the value is missing; typically used with unaligned sequences.
-    const MISSING_VALUE: [u8; 1] = [b'*'];
+    const MISSING_VALUE: [u8; 1] = *b"*";
+
+    // Tags for known optional fields.
+    const TAG_ALIGNMENT_SCORE: [u8; 2] = *b"AS";
+    const TAG_BASE_QUALITY: [u8; 2] = *b"bq";
+    const TAG_DIFFERENCE_STRING: [u8; 2] = *b"cs";
+    const TAG_PROPERLY_PAIRED: [u8; 2] = *b"pd";
+    const TAG_PAIR_NAME_NEXT: [u8; 2] = *b"fn";
+    const TAG_PAIR_NAME_PREV: [u8; 2] = *b"fp";
+
+    // Tags only used in the output.
+    const TAG_FRAGMENT_INDEX: [u8; 2] = *b"fi";
 
     /// Creates an empty alignment.
     pub fn new() -> Self {
@@ -352,13 +363,13 @@ impl Alignment {
         for field in fields[Self::MANDATORY_FIELDS..].iter() {
             let parsed = TypedField::parse(field)?;
             match parsed {
-                TypedField::Int([b'A', b'S'], value) => {
+                TypedField::Int(Self::TAG_ALIGNMENT_SCORE, value) => {
                     if score.is_some() {
                         return Err(Error::invalid_data("Multiple alignment score fields"));
                     }
                     score = Some(value);
                 },
-                TypedField::String([b'b', b'q'], value) => {
+                TypedField::String(Self::TAG_BASE_QUALITY, value) => {
                     if !base_quality.is_empty() {
                         return Err(Error::invalid_data("Multiple base quality fields"));
                     }
@@ -368,22 +379,22 @@ impl Alignment {
                     }
                     base_quality = value;
                 },
-                TypedField::String([b'c', b's'], value) => {
+                TypedField::String(Self::TAG_DIFFERENCE_STRING, value) => {
                     if !difference.is_empty() {
                         return Err(Error::invalid_data("Multiple difference fields"));
                     }
                     difference = Difference::parse_normalized(&value)?;
                 },
-                TypedField::Bool([b'p', b'd'], value) => {
+                TypedField::Bool(Self::TAG_PROPERLY_PAIRED, value) => {
                     if properly_paired.is_some() {
                         return Err(Error::invalid_data("Multiple properly paired fields"));
                     }
                     properly_paired = Some(value);
                 },
-                TypedField::String([b'f', b'n'], value) => {
+                TypedField::String(Self::TAG_PAIR_NAME_NEXT, value) => {
                     Self::parse_pair(value, true, &mut pair)?;
                 },
-                TypedField::String([b'f', b'p'], value) => {
+                TypedField::String(Self::TAG_PAIR_NAME_PREV, value) => {
                     Self::parse_pair(value, false, &mut pair)?;
                 },
                 _ => { optional.push(parsed); },
@@ -488,25 +499,25 @@ impl Alignment {
 
         // Known optional fields.
         if let Some(score) = self.score {
-            let field = TypedField::Int([b'A', b'S'], score);
+            let field = TypedField::Int(Self::TAG_ALIGNMENT_SCORE, score);
             field.append_to(&mut result, true);
         }
         if !self.base_quality.is_empty() {
-            TypedField::append_string(&mut result, [b'b', b'q'], &self.base_quality, true);
+            TypedField::append_string(&mut result, Self::TAG_BASE_QUALITY, &self.base_quality, true);
         }
         if !self.difference.is_empty() {
             // TODO: Can we write the difference string directly?
             let target_sequence = &target_sequence[self.path_interval.clone()];
-            let field = TypedField::String([b'c', b's'], Difference::to_bytes(&self.difference, target_sequence));
+            let field = TypedField::String(Self::TAG_DIFFERENCE_STRING, Difference::to_bytes(&self.difference, target_sequence));
             field.append_to(&mut result, true);
         }
         if let Some(pair) = &self.pair {
             if pair.is_next {
-                TypedField::append_string(&mut result, [b'f', b'n'], pair.name.as_bytes(), true);
+                TypedField::append_string(&mut result, Self::TAG_PAIR_NAME_NEXT, pair.name.as_bytes(), true);
             } else {
-                TypedField::append_string(&mut result, [b'f', b'p'], pair.name.as_bytes(), true);
+                TypedField::append_string(&mut result, Self::TAG_PAIR_NAME_PREV, pair.name.as_bytes(), true);
             }
-            let field = TypedField::Bool([b'p', b'd'], pair.is_proper);
+            let field = TypedField::Bool(Self::TAG_PROPERLY_PAIRED, pair.is_proper);
             field.append_to(&mut result, true);
         }
 
@@ -859,7 +870,7 @@ impl Alignment {
             pair: self.pair.clone(),
             optional: self.optional.clone(),
         };
-        aln.optional.push(TypedField::Int([b'f', b'i'], fragment_index as isize));
+        aln.optional.push(TypedField::Int(Self::TAG_FRAGMENT_INDEX, fragment_index as isize));
 
         aln
     }

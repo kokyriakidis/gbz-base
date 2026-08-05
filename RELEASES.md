@@ -2,10 +2,8 @@
 
 ## Current version
 
-* Breaking change: fallible operations return `Error` instead of `String`.
+* Fallible operations return `Error` instead of `String`.
   * An `Error` combines a message with an `ErrorKind` that tells apart failures needing different responses.
-  * The kinds are `Database`, `Io`, `InvalidData`, `InvalidQuery`, `NotFound`, `LimitExceeded`, `Unsupported`, and `Internal`.
-  * For example, a caller can now tell a query that exceeded the `--limit` for `--between` from a database error.
   * `Result<T>` is a shorthand for `Result<T, Error>`.
 * Consolidated binaries:
   * `gbz-base construct` replaces `gbz2db`.
