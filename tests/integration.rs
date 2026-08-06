@@ -910,7 +910,7 @@ fn append_query_variants(
 ) {
     for context in [0, 30, 100] {
         for snarls in [SnarlOutput::None, SnarlOutput::Contained, SnarlOutput::Overlapping] {
-            for output in [HaplotypeOutput::All, HaplotypeOutput::Distinct, HaplotypeOutput::ReferenceOnly] {
+            for output in [HaplotypeOutput::All, HaplotypeOutput::Distinct, HaplotypeOutput::ReferenceOnly, HaplotypeOutput::None] {
                 if query.is_node_based() && output == HaplotypeOutput::ReferenceOnly {
                     // No reference path.
                     continue;
@@ -919,7 +919,7 @@ fn append_query_variants(
                     // Not implemented.
                     continue;
                 }
-                queries.push(query.clone().with_context(context).with_snarls(snarls).with_output(output));
+                queries.push(query.clone().with_context(context).with_snarls(snarls).with_haplotypes(output));
                 let mut args = args.to_vec();
                 args.push(String::from("--context"));
                 args.push(context.to_string());
@@ -939,6 +939,9 @@ fn append_query_variants(
                     },
                     HaplotypeOutput::ReferenceOnly => {
                         args.push(String::from("--reference-only"));
+                    },
+                    HaplotypeOutput::None => {
+                        args.push(String::from("--no-haplotypes"));
                     },
                 }
                 arg_lists.push(args);

@@ -144,6 +144,7 @@ All other paths will be listed as unknown haplotypes.
   Context length can be specified using suffixes such as `k` or `M`.
 * `--distinct`: Collapse identical paths in the subgraph and report the number of copies using `WT:i` tags.
 * `--reference-only`: Output the query path but no unknown haplotypes.
+* `--no-haplotypes`: Do not include haplotype paths in the output.
 * `--cigar`: Output CIGAR strings relative to the query path as `CG:Z` tags.
 * `--format json`: Extract the subgraph in JSON format instead of GFA.
 

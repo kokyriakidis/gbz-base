@@ -13,6 +13,8 @@
   * `gaf-base decompress` replaces `db2gaf`.
   * Old binaries are deprecated but still available.
 * Parameter presets for short and long reads in `gaf-base sort` and `gaf-base construct`.
+* Query improvements:
+  * Option for no haplotype output.
 * Bug fixes:
   * `gaf-base decompress` works correctly with a reference-free GAF-base.
   * Multithreaded stable GAF sorting works correctly.

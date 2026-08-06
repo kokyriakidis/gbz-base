@@ -206,6 +206,10 @@ struct QueryArgs {
     #[arg(long)]
     reference_only: bool,
 
+    /// Output no haplotypes
+    #[arg(long)]
+    no_haplotypes: bool,
+
     /// Output CIGAR strings for the haplotypes
     #[arg(long)]
     cigar: bool,
@@ -322,9 +326,10 @@ fn build_subgraph_query(args: &QueryArgs) -> Result<SubgraphQuery> {
     let mut output = HaplotypeOutput::All;
     if args.distinct {
         output = HaplotypeOutput::Distinct;
-    }
-    if args.reference_only {
+    } else if args.reference_only {
         output = HaplotypeOutput::ReferenceOnly;
+    } else if args.no_haplotypes {
+        output = HaplotypeOutput::None;
     }
 
     let query = if let Some(offset) = args.offset {
@@ -346,7 +351,7 @@ fn build_subgraph_query(args: &QueryArgs) -> Result<SubgraphQuery> {
         SubgraphQuery::nodes(nodes)
     };
 
-    Ok(query.with_context(args.context).with_snarls(snarls).with_output(output))
+    Ok(query.with_context(args.context).with_snarls(snarls).with_haplotypes(output))
 }
 
 fn parse_interval(s: &str) -> Result<Range<usize>> {

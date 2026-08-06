@@ -609,6 +609,9 @@ impl Subgraph {
         Ok((inserted, removed))
     }
 
+    // FIXME: safety limit should be handled by add_node_internal
+    // FIXME: and it should be stored in the subgraph (either from a query or with an appropriate setter)
+    // FIXME: then we can test it with every query in the tests: None to get n, Some(n-1) to get an error, Some(n) query successfully
     /// Inserts all nodes between the given two handles into the subgraph.
     ///
     /// If `start` and `end` are in the same chain in the given order, this will insert all nodes and snarls between them.
@@ -1048,6 +1051,9 @@ impl Subgraph {
         output: HaplotypeOutput
     ) -> Result<()> {
         self.clear_paths();
+        if output == HaplotypeOutput::None {
+            return Ok(());
+        }
 
         let ref_pos;
         if let Some((position, name)) = reference_path {

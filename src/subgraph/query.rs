@@ -17,6 +17,8 @@ pub enum HaplotypeOutput {
     Distinct,
     /// Output only the reference path.
     ReferenceOnly,
+    /// No haplotypes in the output.
+    None,
 }
 
 impl Display for HaplotypeOutput {
@@ -25,6 +27,7 @@ impl Display for HaplotypeOutput {
             HaplotypeOutput::All => write!(f, "all"),
             HaplotypeOutput::Distinct => write!(f, "distinct"),
             HaplotypeOutput::ReferenceOnly => write!(f, "reference only"),
+            HaplotypeOutput::None => write!(f, "none"),
         }
     }
 }
@@ -58,6 +61,7 @@ pub(super) enum QueryType {
     PathInterval(FullPathName, usize),
     // Set of node identifiers.
     Nodes(BTreeSet<usize>),
+    // FIXME: safety limit should be in the query itself
     // Subgraph between two handles in the same chain, with an optional safety limit for the number of nodes extracted.
     Between((usize, usize), Option<usize>),
 }
@@ -153,6 +157,7 @@ impl SubgraphQuery {
         }
     }
 
+    // FIXME: move limit to with_limit
     /// Creates a query that extracts a subgraph between two handles in the same chain.
     ///
     /// This query ignores context length and the snarl extraction flag.
@@ -181,6 +186,11 @@ impl SubgraphQuery {
         SubgraphQuery { snarls, ..self }
     }
 
+    #[deprecated(since = "0.6.0", note = "Use `with_haplotypes` instead")]
+    pub fn with_output(self, output: HaplotypeOutput) -> Self {
+        self.with_haplotypes(output)
+    }
+
     /// Returns an updated query with the given haplotype output option.
     ///
     /// See [`Self::DEFAULT_OUTPUT`] for the default value.
@@ -188,7 +198,7 @@ impl SubgraphQuery {
     /// # Panics
     ///
     /// Panics if this is a node-based query and the output would be [`HaplotypeOutput::ReferenceOnly`].
-    pub fn with_output(self, output: HaplotypeOutput) -> Self {
+    pub fn with_haplotypes(self, output: HaplotypeOutput) -> Self {
         if self.is_node_based() {
             assert!(output != HaplotypeOutput::ReferenceOnly, "Reference-only output is not supported for node-based queries");
         }

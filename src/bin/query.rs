@@ -331,7 +331,7 @@ impl Config {
             SubgraphQuery::nodes(nodes)
         };
 
-        Ok(query.with_context(context).with_snarls(snarls).with_output(output))
+        Ok(query.with_context(context).with_snarls(snarls).with_haplotypes(output))
     }
 }
 

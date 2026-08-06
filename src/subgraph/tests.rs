@@ -475,30 +475,31 @@ fn queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, usize)>) {
     let path_a = FullPathName::generic("A");
     let path_b = FullPathName::generic("B");
     let queries = vec![
-        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::All),
-        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::Distinct),
-        SubgraphQuery::nodes([14]).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::Distinct),
-        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::ReferenceOnly),
-        SubgraphQuery::path_offset(&path_b, 2).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::All),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::Distinct),
+        SubgraphQuery::nodes([14]).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::ReferenceOnly),
+        SubgraphQuery::path_offset(&path_b, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_b, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::None),
 
         // Path interval corresponding to a snarl with all snarl modes.
-        SubgraphQuery::path_interval(&path_a, 2..5).with_context(0).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::All),
-        SubgraphQuery::path_interval(&path_a, 2..5).with_context(0).with_snarls(SnarlOutput::Contained).with_output(HaplotypeOutput::All),
-        SubgraphQuery::path_interval(&path_a, 2..5).with_context(0).with_snarls(SnarlOutput::Overlapping).with_output(HaplotypeOutput::All),
+        SubgraphQuery::path_interval(&path_a, 2..5).with_context(0).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::All),
+        SubgraphQuery::path_interval(&path_a, 2..5).with_context(0).with_snarls(SnarlOutput::Contained).with_haplotypes(HaplotypeOutput::All),
+        SubgraphQuery::path_interval(&path_a, 2..5).with_context(0).with_snarls(SnarlOutput::Overlapping).with_haplotypes(HaplotypeOutput::All),
 
         // If we start 1 bp earlier (inside a snarl), we get another snarl as well.
-        SubgraphQuery::path_interval(&path_a, 1..5).with_context(0).with_snarls(SnarlOutput::Overlapping).with_output(HaplotypeOutput::All),
+        SubgraphQuery::path_interval(&path_a, 1..5).with_context(0).with_snarls(SnarlOutput::Overlapping).with_haplotypes(HaplotypeOutput::All),
         // The result does not change if we stop 1 bp earlier (inside a snarl).
-        SubgraphQuery::path_interval(&path_a, 1..4).with_context(0).with_snarls(SnarlOutput::Overlapping).with_output(HaplotypeOutput::All),
+        SubgraphQuery::path_interval(&path_a, 1..4).with_context(0).with_snarls(SnarlOutput::Overlapping).with_haplotypes(HaplotypeOutput::All),
 
         // A snarl in both orientations.
-        SubgraphQuery::between(support::encode_node(11, Orientation::Forward), support::encode_node(14, Orientation::Forward), None).with_output(HaplotypeOutput::All),
-        SubgraphQuery::between(support::encode_node(14, Orientation::Reverse), support::encode_node(11, Orientation::Reverse), None).with_output(HaplotypeOutput::All),
+        SubgraphQuery::between(support::encode_node(11, Orientation::Forward), support::encode_node(14, Orientation::Forward), None).with_haplotypes(HaplotypeOutput::All),
+        SubgraphQuery::between(support::encode_node(14, Orientation::Reverse), support::encode_node(11, Orientation::Reverse), None).with_haplotypes(HaplotypeOutput::All),
 
         // We can find the same snarl starting from an internal node.
-        SubgraphQuery::nodes([12]).with_context(0).with_snarls(SnarlOutput::Overlapping).with_output(HaplotypeOutput::All),
+        SubgraphQuery::nodes([12]).with_context(0).with_snarls(SnarlOutput::Overlapping).with_haplotypes(HaplotypeOutput::All),
         // If we start from a boundary node, we do not extract the snarl.
-        SubgraphQuery::nodes([11]).with_context(0).with_snarls(SnarlOutput::Overlapping).with_output(HaplotypeOutput::All),
+        SubgraphQuery::nodes([11]).with_context(0).with_snarls(SnarlOutput::Overlapping).with_haplotypes(HaplotypeOutput::All),
     ];
     let truth = vec![
         (vec![12, 13, 14, 15, 16], 3),
@@ -506,6 +507,7 @@ fn queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, usize)>) {
         (vec![12, 13, 14, 15, 16], 2),
         (vec![12, 13, 14, 15, 16], 1),
         (vec![22, 23, 24, 25], 2),
+        (vec![22, 23, 24, 25], 0),
 
         (vec![14, 15, 17], 4),
         (vec![14, 15, 16, 17], 3),
@@ -529,11 +531,12 @@ fn queries_and_gfas(cigar: bool) -> (Vec<SubgraphQuery>, Vec<Vec<String>>){
     let path_a = FullPathName::generic("A");
     let path_b = FullPathName::generic("B");
     let queries = vec![
-        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::All),
-        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::Distinct),
-        SubgraphQuery::nodes([14]).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::Distinct),
-        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::ReferenceOnly),
-        SubgraphQuery::path_offset(&path_b, 2).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::All),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::Distinct),
+        SubgraphQuery::nodes([14]).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::ReferenceOnly),
+        SubgraphQuery::path_offset(&path_b, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_b, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::None),
     ];
     let gfas = vec![
         vec![
@@ -603,6 +606,16 @@ fn queries_and_gfas(cigar: bool) -> (Vec<SubgraphQuery>, Vec<Vec<String>>){
             String::from("L\t24\t+\t25\t+\t0M"),
             String::from("W\t_gbwt_ref\t0\tB\t1\t4\t>22>24>25\tWT:i:2"),
             format!("W\tunknown\t1\tB\t0\t3\t>22>24<23\tWT:i:1{}", if cigar { "\tCG:Z:3M" } else { "" }),
+        ],
+        vec![
+            String::from("H\tVN:Z:1.1"),
+            String::from("S\t22\tA"),
+            String::from("S\t23\tT"),
+            String::from("S\t24\tT"),
+            String::from("S\t25\tA"),
+            String::from("L\t22\t+\t24\t+\t0M"),
+            String::from("L\t23\t+\t24\t-\t0M"),
+            String::from("L\t24\t+\t25\t+\t0M"),
         ]
     ];
     (queries, gfas)
@@ -613,10 +626,10 @@ fn queries_and_jsons(cigar: bool) -> (Vec<SubgraphQuery>, Vec<String>){
     let path_a = FullPathName::generic("A");
     //let path_b = FullPathName::generic("B");
     let queries = vec![
-        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::All),
-        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::Distinct),
-        SubgraphQuery::nodes([14]).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::Distinct),
-        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::ReferenceOnly),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::All),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::Distinct),
+        SubgraphQuery::nodes([14]).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(SnarlOutput::None).with_haplotypes(HaplotypeOutput::ReferenceOnly),
     ];
 
     let mut nodes: Vec<JSONValue> = Vec::new();
@@ -1207,7 +1220,7 @@ fn gfa_output() {
             assert_eq!(lines.len(), truth.len() + name_headers.len(), "Wrong number of lines in GFA output for query {}", query);
             for (line_num, &line) in lines.iter().enumerate() {
                 if line_num == 0 {
-                    assert_eq!(line, lines[0], "Wrong GFA file header for query {}", query);
+                    assert_eq!(line, truth[0], "Wrong GFA file header for query {}", query);
                 } else if line_num <= name_headers.len() {
                     let header_line = &name_headers[line_num - 1];
                     assert_eq!(line, header_line, "Wrong GFA name header line {} for query {}", line_num, query);
