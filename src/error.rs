@@ -1,11 +1,7 @@
-//! The error type used throughout this crate.
+//! The error type used in this crate.
 //!
-//! Every fallible operation in this crate returns an [`Error`], which combines a human-readable
-//! message with an [`ErrorKind`] describing what kind of thing went wrong.
-//! The kind exists so that callers can react to a failure without parsing the message.
-//! Each kind corresponds to a different remedy; see the [`ErrorKind`] variants for details.
-//!
-//! The type alias [`Result`] is a convenient shorthand for [`std::result::Result<T, Error>`].
+//! [`Error`] is a simple error type that combines an error kind or code ([`ErrorKind`]) with a human-readable message.
+//! [`Result`] is a convenient shorthand for [`std::result::Result<T, Error>`].
 
 use std::fmt;
 use std::io;
@@ -95,6 +91,8 @@ impl fmt::Display for ErrorKind {
 /// [`Display`](fmt::Display) writes the message alone, while [`Debug`](fmt::Debug) prefixes it with the kind.
 /// Because `fn main() -> Result<(), Error>` reports errors using [`Debug`](fmt::Debug), a binary that
 /// propagates an error out of `main` prints the kind along with the message.
+///
+/// [`io::Error`] and [`rusqlite::Error`] can be converted into this error type using the [`From`] trait.
 ///
 /// # Examples
 ///
