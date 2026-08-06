@@ -1,5 +1,6 @@
 use gbz_base::{Alignment, GAFBaseParams};
 use gbz_base::{formats, utils};
+use gbz_base::Error;
 
 use htscodecs_wrapper::RANSFlags;
 
@@ -12,7 +13,7 @@ use getopts::Options;
 
 //-----------------------------------------------------------------------------
 
-fn main() -> Result<(), String> {
+fn main() -> Result<(), Error> {
     let start_time = Instant::now();
 
     let config = Config::new();
@@ -22,7 +23,7 @@ fn main() -> Result<(), String> {
     let mut state = State::new();
     loop {
         let mut buf: Vec<u8> = Vec::new();
-        let len = gaf_file.read_until(b'\n', &mut buf).map_err(|x| x.to_string())?;
+        let len = gaf_file.read_until(b'\n', &mut buf)?;
         if len == 0 {
             // End of file.
             break;
@@ -31,20 +32,20 @@ fn main() -> Result<(), String> {
             continue;
         }
         let aln = Alignment::from_gaf(&buf).map_err(
-            |x| format!("Failed to parse the alignment on line {}: {}", line_num, x)
+            |x| Error::invalid_data(format!("Failed to parse the alignment on line {}: {}", line_num, x))
         )?;
         if aln.is_unaligned() != state.unaligned_block {
             // We have a new block.
-            state.flush()?;
+            state.flush().map_err(Error::internal)?;
             state.unaligned_block = aln.is_unaligned();
         }
         state.add_alignment(&aln);
         if state.current_block_size >= config.params.block_size {
-            state.flush()?;
+            state.flush().map_err(Error::internal)?;
         }
         line_num += 1;
     }
-    state.flush()?;
+    state.flush().map_err(Error::internal)?;
 
     for (level, size) in state.zstd.iter() {
         let size = utils::human_readable_size(*size);

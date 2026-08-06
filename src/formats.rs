@@ -37,6 +37,7 @@
 //!
 //! I/O for GAF alignment lines is currently implemented in [`crate::Alignment`].
 
+use crate::error::{Error, Result};
 use crate::utils;
 
 use std::fmt::Display;
@@ -101,15 +102,19 @@ impl TypedField {
     /// Parses the field from a TAG:TYPE:VALUE string.
     ///
     /// Returns an error if the field cannot be parsed or the type is unsupported.
-    pub fn parse(field: &[u8]) -> Result<Self, String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the field is malformed or of an unsupported type.
+    pub fn parse(field: &[u8]) -> Result<Self> {
         if field.len() < 5 || field[2] != b':' || field[4] != b':' {
-            return Err(format!("Invalid typed field: {}", String::from_utf8_lossy(field)));
+            return Err(Error::invalid_data(format!("Invalid typed field: {}", String::from_utf8_lossy(field))));
         }
         let tag = [field[0], field[1]];
         match field[3] {
             b'A' => {
                 if field.len() != 6 {
-                    return Err(format!("Invalid char field {}", String::from_utf8_lossy(field)));
+                    return Err(Error::invalid_data(format!("Invalid char field {}", String::from_utf8_lossy(field))));
                 }
                 Ok(TypedField::Char(tag, field[5]))
             },
@@ -117,28 +122,28 @@ impl TypedField {
             b'i' => {
                 let value = String::from_utf8_lossy(&field[5..]);
                 let value = value.parse::<isize>().map_err(|err| {
-                    format!("Invalid int field {}: {}", value, err)
+                    Error::invalid_data(format!("Invalid int field {}: {}", value, err))
                 })?;
                 Ok(TypedField::Int(tag, value))
             },
             b'f' => {
                 let value = String::from_utf8_lossy(&field[5..]);
                 let value = value.parse::<f64>().map_err(|err| {
-                    format!("Invalid float field {}: {}", value, err)
+                    Error::invalid_data(format!("Invalid float field {}: {}", value, err))
                 })?;
                 Ok(TypedField::Float(tag, value))
             },
             b'b' => {
                 if field.len() != 6 {
-                    return Err(format!("Invalid bool field {}", String::from_utf8_lossy(field)));
+                    return Err(Error::invalid_data(format!("Invalid bool field {}", String::from_utf8_lossy(field))));
                 }
                 match field[5] {
                     b'0' => Ok(TypedField::Bool(tag, false)),
                     b'1' => Ok(TypedField::Bool(tag, true)),
-                    _ => Err(format!("Invalid bool field {}", String::from_utf8_lossy(field))),
+                    _ => Err(Error::invalid_data(format!("Invalid bool field {}", String::from_utf8_lossy(field)))),
                 }
             },
-            _ => Err(format!("Unsupported field type: {}", field[3] as char)),
+            _ => Err(Error::invalid_data(format!("Unsupported field type: {}", field[3] as char))),
         }
     }
 
@@ -439,11 +444,11 @@ pub fn write_gfa_walk<T: Write>(path: &[usize], metadata: &WalkMetadata, output:
     buffer.push(b'\t');
     append_walk(&mut buffer, path);
     if let Some(weight) = metadata.weight {
-        let field = TypedField::Int([b'W', b'T'], weight as isize);
+        let field = TypedField::Int(*b"WT", weight as isize);
         field.append_to(&mut buffer, true);
     }
     if let Some(cigar) = &metadata.cigar {
-        let field = TypedField::String([b'C', b'G'], cigar.as_bytes().to_vec());
+        let field = TypedField::String(*b"CG", cigar.as_bytes().to_vec());
         field.append_to(&mut buffer, true);
     }
     buffer.push(b'\n');

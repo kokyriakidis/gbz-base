@@ -10,6 +10,6 @@
 
 // FIXME: And this should become gbz-base chunk
 
-fn main() -> Result<(), String> {
+fn main() -> gbz_base::Result<()> {
     Ok(())
 }

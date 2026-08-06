@@ -1,5 +1,7 @@
 //! Utility functions and structures.
 
+use crate::error::{Error, Result};
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::ops::{Range, RangeInclusive};
@@ -71,15 +73,15 @@ pub fn is_gzipped<R: BufRead>(reader: &mut R) -> io::Result<bool> {
 ///
 /// # Errors
 ///
-/// Passes through any I/O errors from trying to open and read the file.
-pub fn open_file<P: AsRef<Path>>(filename: P) -> Result<Box<dyn BufRead>, String> {
+/// Returns an [`ErrorKind::Io`](crate::ErrorKind::Io) error if the file cannot be opened or read.
+pub fn open_file<P: AsRef<Path>>(filename: P) -> Result<Box<dyn BufRead>> {
     let mut inner = if filename.as_ref() == Path::new("-") {
         Box::new(BufReader::new(io::stdin())) as Box<dyn BufRead>
     } else {
-        let file = File::open(&filename).map_err(|x| format!("Failed to open file {}: {}", filename.as_ref().display(), x))?;
+        let file = File::open(&filename).map_err(|x| Error::io(format!("Failed to open file {}: {}", filename.as_ref().display(), x)))?;
         Box::new(BufReader::new(file)) as Box<dyn BufRead>
     };
-    if is_gzipped(&mut inner).map_err(|x| format!("Failed to read file {}: {}", filename.as_ref().display(), x))? {
+    if is_gzipped(&mut inner).map_err(|x| Error::io(format!("Failed to read file {}: {}", filename.as_ref().display(), x)))? {
         let gz_inner = MultiGzDecoder::new(inner);
         Ok(Box::new(BufReader::new(gz_inner)))
     } else {
@@ -197,13 +199,19 @@ pub fn encoded_length(sequence_length: usize) -> usize {
 /// The comparison is based on the provided [`GraphName`] objects.
 /// If either graph name is missing, no error is returned.
 /// Otherwise the graph name for the alignments must be a subgraph of the reference graph.
-pub fn require_valid_reference(alignments: &GraphName, reference: &GraphName) -> Result<(), String> {
+///
+/// # Errors
+///
+/// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error if the graph is not a
+/// valid reference for the alignments.
+/// The message describes the relationship between the two graphs and spans multiple lines.
+pub fn require_valid_reference(alignments: &GraphName, reference: &GraphName) -> Result<()> {
     if !alignments.has_name() || !reference.has_name() {
         return Ok(());
     }
     if !alignments.is_subgraph_of(reference) {
         let description = alignments.describe_relationship(reference, "alignments", "reference graph");
-        return Err(format!("The graph is not a valid reference for the alignments:\n{}", description));
+        return Err(Error::invalid_query(format!("The graph is not a valid reference for the alignments:\n{}", description)));
     }
     Ok(())
 }

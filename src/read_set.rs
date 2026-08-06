@@ -2,6 +2,7 @@
 
 use crate::{GAFBase, GBZRecord, GraphReference, Subgraph, Alignment, AlignmentBlock};
 use crate::alignment::{Flags, TargetPath};
+use crate::error::{Error, Result};
 use crate::utils;
 
 use gbz::{Orientation, Pos, GBZ};
@@ -119,24 +120,24 @@ impl ReadSet {
     pub const CLUSTER_GAP_THRESHOLD: usize = 1000;
 
     // Returns the row id from the first column.
-    fn get_row_id(row: &Row) -> Result<usize, String> {
-        let row_id: usize = row.get(0).map_err(|x| x.to_string())?;
+    fn get_row_id(row: &Row) -> Result<usize> {
+        let row_id: usize = row.get(0)?;
         Ok(row_id)
     }
 
     // Decompresses an alignment block from a row, starting from index `from_idx`.
-    fn decompress_block(row: &Row, from_idx: usize) -> Result<Vec<Alignment>, String> {
-        let min_handle: Option<usize> = row.get(from_idx + 0).map_err(|x| x.to_string())?;
-        let max_handle: Option<usize> = row.get(from_idx + 1).map_err(|x| x.to_string())?;
-        let alignments: usize = row.get(from_idx + 2).map_err(|x| x.to_string())?;
-        let read_length: Option<usize> = row.get(from_idx + 3).map_err(|x| x.to_string())?;
-        let gbwt_starts: Vec<u8> = row.get(from_idx + 4).map_err(|x| x.to_string())?;
-        let names: Vec<u8> = row.get(from_idx + 5).map_err(|x| x.to_string())?;
-        let quality_strings: Vec<u8> = row.get(from_idx + 6).map_err(|x| x.to_string())?;
-        let difference_strings: Vec<u8> = row.get(from_idx + 7).map_err(|x| x.to_string())?;
-        let flags: Vec<u8> = row.get(from_idx + 8).map_err(|x| x.to_string())?;
-        let numbers: Vec<u8> = row.get(from_idx + 9).map_err(|x| x.to_string())?;
-        let optional: Vec<u8> = row.get(from_idx + 10).map_err(|x| x.to_string())?;
+    fn decompress_block(row: &Row, from_idx: usize) -> Result<Vec<Alignment>> {
+        let min_handle: Option<usize> = row.get(from_idx + 0)?;
+        let max_handle: Option<usize> = row.get(from_idx + 1)?;
+        let alignments: usize = row.get(from_idx + 2)?;
+        let read_length: Option<usize> = row.get(from_idx + 3)?;
+        let gbwt_starts: Vec<u8> = row.get(from_idx + 4)?;
+        let names: Vec<u8> = row.get(from_idx + 5)?;
+        let quality_strings: Vec<u8> = row.get(from_idx + 6)?;
+        let difference_strings: Vec<u8> = row.get(from_idx + 7)?;
+        let flags: Vec<u8> = row.get(from_idx + 8)?;
+        let numbers: Vec<u8> = row.get(from_idx + 9)?;
+        let optional: Vec<u8> = row.get(from_idx + 10)?;
         let block = AlignmentBlock {
             min_handle, max_handle, alignments, read_length,
             gbwt_starts, names,
@@ -152,9 +153,9 @@ impl ReadSet {
     // If the path is valid, inserts all missing node records into the read set.
     fn set_target_path(
         &mut self, alignment: &mut Alignment, subgraph: &Subgraph,
-        get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>,
+        get_record: &mut dyn FnMut(usize) -> Result<GBZRecord>,
         contained: bool
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let mut pos = match alignment.path {
             TargetPath::Path(_) => return Ok(()),
             TargetPath::StartPosition(pos) => Some(pos),
@@ -197,8 +198,8 @@ impl ReadSet {
     // Inserts all missing node records into the read set.
     fn set_target_path_simple(
         &mut self, alignment: &mut Alignment,
-        get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>,
-    ) -> Result<(), String> {
+        get_record: &mut dyn FnMut(usize) -> Result<GBZRecord>,
+    ) -> Result<()> {
         let mut pos = match alignment.path {
             TargetPath::Path(_) => return Ok(()),
             TargetPath::StartPosition(pos) => Some(pos),
@@ -242,17 +243,18 @@ impl ReadSet {
     ///
     /// # Errors
     ///
-    /// Passes through any database errors.
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the database is missing a node record that an alignment refers to.
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     /// Returns an error if an alignment cannot be decompressed.
-    pub fn new(graph: GraphReference<'_, '_>, subgraph: &Subgraph, database: &GAFBase, output: AlignmentOutput) -> Result<Self, String> {
+    pub fn new(graph: GraphReference<'_, '_>, subgraph: &Subgraph, database: &GAFBase, output: AlignmentOutput) -> Result<Self> {
         let mut read_set = ReadSet::default();
 
         // Build a record from the databases.
         let mut get_node = database.connection.prepare(
             "SELECT edges, bwt, sequence FROM Nodes WHERE handle = ?1"
-        ).map_err(|x| x.to_string())?;
+        )?;
         let mut graph = graph;
-        let mut get_record = |handle: usize| -> Result<GBZRecord, String> {
+        let mut get_record = |handle: usize| -> Result<GBZRecord> {
             // Get the node record from the GAF-base.
             let gaf_result = get_node.query_row(
                 (handle,),
@@ -264,9 +266,9 @@ impl ReadSet {
                     let sequence = utils::decode_sequence(&encoded_sequence);
                     Ok((edges, bwt, sequence))
                 }
-            ).optional().map_err(|x| x.to_string())?;
+            ).optional()?;
             if gaf_result.is_none() {
-                return Err(format!("Could not find the record for handle {} in GAF-base", handle));
+                return Err(Error::invalid_data(format!("GAF-base does not contain a record for node handle {}", handle)));
             }
             let (edges, bwt, mut sequence) = gaf_result.unwrap();
 
@@ -304,10 +306,10 @@ impl ReadSet {
             "SELECT id, min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers, optional
             FROM Alignments
             WHERE min_handle <= ?1 AND max_handle >= ?2"
-        ).map_err(|x| x.to_string())?;
+        )?;
         for (min_handle, max_handle) in clusters.into_iter() {
-            let mut rows = get_reads.query((max_handle, min_handle)).map_err(|x| x.to_string())?;
-            while let Some(row) = rows.next().map_err(|x| x.to_string())? {
+            let mut rows = get_reads.query((max_handle, min_handle))?;
+            while let Some(row) = rows.next()? {
                 let row_id = Self::get_row_id(row)?;
                 if row_ids.contains(&row_id) {
                     continue;
@@ -354,16 +356,17 @@ impl ReadSet {
     ///
     /// # Errors
     ///
-    /// Passes through any database errors.
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the database is missing a node record that an alignment refers to.
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     /// Returns an error if an alignment cannot be decompressed.
-    pub fn from_rows(database: &GAFBase, row_range: Range<usize>, graph: Option<&GBZ>) -> Result<Self, String> {
+    pub fn from_rows(database: &GAFBase, row_range: Range<usize>, graph: Option<&GBZ>) -> Result<Self> {
         let mut read_set = ReadSet { clusters: 1, ..Default::default() };
 
         // Build a record from the GAF-base, with the sequence possibly from the GBZ graph.
         let mut get_node = database.connection.prepare(
             "SELECT edges, bwt, sequence FROM Nodes WHERE handle = ?1"
-        ).map_err(|x| x.to_string())?;
-        let mut get_record = |handle: usize| -> Result<GBZRecord, String> {
+        )?;
+        let mut get_record = |handle: usize| -> Result<GBZRecord> {
             // Get the edges and the BWT fragment from the GAF-base.
             let gaf_result = get_node.query_row(
                 (handle,),
@@ -375,19 +378,19 @@ impl ReadSet {
                     let sequence = utils::decode_sequence(&encoded_sequence);
                     Ok((edges, bwt, sequence))
                 }
-            ).optional().map_err(|x| x.to_string())?;
+            ).optional()?;
             if gaf_result.is_none() {
-                return Err(format!("Could not find the record for handle {} in GAF-base", handle));
+                return Err(Error::invalid_data(format!("GAF-base does not contain a record for node handle {}", handle)));
             }
             let (edges, bwt, mut sequence) = gaf_result.unwrap();
             if sequence.is_empty() {
                 if let Some(graph) = graph {
                     let seq = graph.sequence(support::node_id(handle)).ok_or_else(||
-                        format!("Could not find the sequence for handle {} in GBZ", handle)
+                        Error::invalid_data(format!("The graph does not contain a sequence for node handle {}", handle))
                     )?;
                     sequence = seq.to_vec();
                 } else {
-                    return Err(String::from("No reference provided for a reference-based GAF-base"));
+                    return Err(Error::invalid_query("No reference provided for a reference-based GAF-base"));
                 }
                 if support::node_orientation(handle) == Orientation::Reverse {
                     sequence = support::reverse_complement(&sequence);
@@ -404,9 +407,9 @@ impl ReadSet {
             "SELECT min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers, optional
             FROM Alignments
             WHERE id >= ?1 AND id < ?2"
-        ).map_err(|x| x.to_string())?;
-        let mut rows = get_reads.query((row_range.start, row_range.end)).map_err(|x| x.to_string())?;
-        while let Some(row) = rows.next().map_err(|x| x.to_string())? {
+        )?;
+        let mut rows = get_reads.query((row_range.start, row_range.end))?;
+        while let Some(row) = rows.next()? {
             let block = Self::decompress_block(row, 0)?;
             let block_size = block.len();
             for mut alignment in block {
@@ -475,7 +478,7 @@ impl ReadSet {
     }
 
     // Extracts the target sequence for the given alignment.
-    fn target_sequence(&self, alignment: &Alignment) -> Result<Vec<u8>, String> {
+    fn target_sequence(&self, alignment: &Alignment) -> Result<Vec<u8>> {
         let target_path = alignment.target_path();
         if target_path.is_none() {
             return Ok(Vec::new());
@@ -486,17 +489,17 @@ impl ReadSet {
         for handle in target_path{
             let record = self.nodes.get(handle);
             if record.is_none() {
-                return Err(format!("Read {}: Missing record for node handle {}", alignment.name, handle));
+                return Err(Error::invalid_data(format!("Read {}: Missing record for node handle {}", alignment.name, handle)));
             }
             let record = record.unwrap();
             sequence.extend_from_slice(record.sequence());
         }
 
         if sequence.len() != alignment.path_len {
-            return Err(format!(
+            return Err(Error::invalid_data(format!(
                 "Read {}: Target path length {} does not match the expected length {}",
                 alignment.name, sequence.len(), alignment.path_len
-            ));
+            )));
         }
         Ok(sequence)
     }
@@ -505,13 +508,13 @@ impl ReadSet {
     ///
     /// The output does not include any header lines, as the GAF file may consist of multiple read sets.
     /// Returns an error if the target sequence for a read is invalid or cannot be determined.
-    /// Passes through any I/O errors.
-    pub fn to_gaf<W: Write>(&self, writer: &mut W) -> Result<(), String> {
+    /// Passes through any [`ErrorKind::Io`](crate::ErrorKind::Io) errors.
+    pub fn to_gaf<W: Write>(&self, writer: &mut W) -> Result<()> {
         for alignment in self.reads.iter() {
             let target_sequence = self.target_sequence(alignment)?;
             let mut line = alignment.to_gaf(&target_sequence);
             line.push(b'\n');
-            writer.write_all(&line).map_err(|x| x.to_string())?;
+            writer.write_all(&line)?;
         }
         Ok(())
     }

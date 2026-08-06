@@ -1,5 +1,6 @@
 //! Basic building blocks of an alignment.
 
+use crate::error::{Error, Result};
 use crate::utils;
 
 use std::ops::Range;
@@ -223,13 +224,17 @@ impl Difference {
     /// Parses a difference string and returns it as a vector of operations.
     ///
     /// Returns an error if the difference string is invalid.
-    pub fn parse(difference_string: &[u8]) -> Result<Vec<Self>, String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the difference string is invalid.
+    pub fn parse(difference_string: &[u8]) -> Result<Vec<Self>> {
         let mut result: Vec<Self> = Vec::new();
         if difference_string.is_empty() {
             return Ok(result);
         }
         if !Self::OPS.contains(&difference_string[0]) {
-            return Err(format!("Invalid difference string operation: {}", difference_string[0] as char));
+            return Err(Error::invalid_data(format!("Invalid difference string operation: {}", difference_string[0] as char)));
         }
 
         let mut start = 0;
@@ -245,8 +250,8 @@ impl Difference {
                 b'*' => Self::mismatch(value),
                 b'+' => Self::insertion(value),
                 b'-' => Self::deletion(value),
-                _ => return Err(format!("Invalid difference string operation: {}", difference_string[start] as char)),
-            }.ok_or_else(|| format!("Invalid difference string field: {}", String::from_utf8_lossy(&difference_string[start..end])))?;
+                _ => return Err(Error::invalid_data(format!("Invalid difference string operation: {}", difference_string[start] as char))),
+            }.ok_or_else(|| Error::invalid_data(format!("Invalid difference string field: {}", String::from_utf8_lossy(&difference_string[start..end]))))?;
             result.push(op);
             start = end;
         }
@@ -258,7 +263,11 @@ impl Difference {
     ///
     /// The operations are merged and empty operations are removed.
     /// Returns an error if the difference string is invalid.
-    pub fn parse_normalized(difference_string: &[u8]) -> Result<Vec<Self>, String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the difference string is invalid.
+    pub fn parse_normalized(difference_string: &[u8]) -> Result<Vec<Self>> {
         let ops = Self::parse(difference_string)?;
         Ok(Self::normalize(ops))
     }

@@ -8,6 +8,7 @@ use gbz::GBZ;
 
 use gbz_base::{GAFBase, ReadSet};
 use gbz_base::{formats, utils};
+use gbz_base::{Error, Result};
 
 use pggname::GraphName;
 
@@ -19,7 +20,7 @@ use getopts::Options;
 
 //-----------------------------------------------------------------------------
 
-fn main() -> Result<(), String> {
+fn main() -> Result<()> {
     eprintln!("This tool has been deprecated. Please use `gaf-base decompress` instead.");
     eprintln!();
 
@@ -30,7 +31,7 @@ fn main() -> Result<(), String> {
     // Inputs.
     let database = GAFBase::open(&config.gaf_base_file)?;
     let graph = if let Some(gbz_file) = &config.gbz_file {
-        Some(serialize::load_from(gbz_file).map_err(|x| x.to_string())?)
+        Some(serialize::load_from(gbz_file)?)
     } else {
         None
     };
@@ -40,11 +41,7 @@ fn main() -> Result<(), String> {
     if let Some(graph) = &graph {
         let reference = GraphName::from_gbz(graph);
         let result = utils::require_valid_reference(&alignments, &reference);
-        if let Err(e) = result {
-            // Print the error manually, as it contains multiple lines.
-            eprint!("Error: {}", e);
-            process::exit(1);
-        }
+        result?;
     }
 
     write_gaf(&database, &alignments, graph.as_ref(), &config)?;
@@ -59,11 +56,11 @@ fn main() -> Result<(), String> {
 
 //-----------------------------------------------------------------------------
 
-fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: Option<&GBZ>, config: &Config) -> Result<(), String> {
+fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: Option<&GBZ>, config: &Config) -> Result<()> {
     // Decoded ReadSets, with an empty ReadSet signaling the end of input.
     let (to_output, from_decoder) = mpsc::sync_channel(4);
 
-    // Status of the output thread as Result<(), String>.
+    // Status of the output thread as Result<()>.
     let (to_decoder, from_output) = mpsc::sync_channel(1);
 
     // Determine header lines first and pass them to the output thread.
@@ -73,10 +70,10 @@ fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: Option<&GBZ>, co
     let output_thread = thread::spawn(move || {
         let mut output = BufWriter::new(io::stdout().lock());
         let mut status = formats::write_gaf_file_header(&mut output)
-            .map_err(|e| e.to_string());
+            .map_err(Error::io);
         if status.is_ok() {
             status = formats::write_header_lines(&header_lines, &mut output)
-                .map_err(|e| e.to_string());
+                .map_err(Error::io);
         }
         while status.is_ok() {
             let read_set: ReadSet = from_decoder.recv().unwrap_or_else(|_| ReadSet::default());
@@ -86,7 +83,7 @@ fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: Option<&GBZ>, co
             status = read_set.to_gaf(&mut output);
         }
         if status.is_ok() {
-            status = output.flush().map_err(|e| e.to_string());
+            status = output.flush().map_err(Error::io);
         }
         let _ = to_decoder.send(status);
     });
@@ -104,7 +101,7 @@ fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: Option<&GBZ>, co
         }
         let read_set = read_set.unwrap();
         if read_set.is_empty() {
-            status = Err(format!("No reads found in rows {}..{}", range.start, range.end));
+            status = Err(Error::invalid_data(format!("No reads found in rows {}..{}", range.start, range.end)));
             let _ = to_output.send(ReadSet::default()); // Signal end of input.
             break;
         }
@@ -115,7 +112,7 @@ fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: Option<&GBZ>, co
     if status.is_ok() {
         let _ = to_output.send(ReadSet::default()); // Signal end of input.
         if found_alns != database.alignments() {
-            status = Err(format!("Expected {} alignments, but found {}", database.alignments(), found_alns));
+            status = Err(Error::invalid_data(format!("Expected {} alignments, but found {}", database.alignments(), found_alns)));
         }
     }
 

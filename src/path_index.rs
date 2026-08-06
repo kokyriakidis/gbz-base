@@ -2,6 +2,8 @@
 //!
 //! This index extends the functionality of a [`GBZ`] graph to match [`crate::GraphInterface`].
 
+use crate::error::{Error, Result};
+
 use gbz::{GBZ, Pos, FullPathName};
 
 use simple_sds::sparse_vector::{SparseVector, SparseBuilder};
@@ -90,7 +92,14 @@ impl PathIndex {
     /// * `graph`: A GBZ graph.
     /// * `interval`: Approximate distance between indexed positions (in bp).
     /// * `verbose`: Print progress information to stderr.
-    pub fn new(graph: &GBZ, interval: usize, verbose: bool) -> Result<Self, String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error if the graph does not contain
+    /// any reference or generic paths to index.
+    /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the reference positions in the
+    /// graph are inconsistent.
+    pub fn new(graph: &GBZ, interval: usize, verbose: bool) -> Result<Self> {
         if verbose {
             eprintln!("Building path index");
         }
@@ -99,7 +108,7 @@ impl PathIndex {
         // to the start of the fragment.
         let reference_paths = graph.reference_positions(interval, verbose);
         if reference_paths.is_empty() {
-            return Err(String::from("No reference paths to index"));
+            return Err(Error::invalid_query("No reference paths to index"));
         }
 
         let mut path_to_offset: HashMap<usize, usize> = HashMap::with_capacity(reference_paths.len());
@@ -111,13 +120,13 @@ impl PathIndex {
             path_to_offset.insert(ref_path.id, offset);
             offset_to_path[offset] = ref_path.id;
             path_lengths.push(ref_path.len);
-            let mut sequence = SparseBuilder::new(ref_path.len, ref_path.positions.len())?;
+            let mut sequence = SparseBuilder::new(ref_path.len, ref_path.positions.len()).map_err(Error::invalid_data)?;
             let mut gbwt = Vec::with_capacity(ref_path.positions.len());
             for (sequence_pos, gbwt_pos) in ref_path.positions.iter() {
                 sequence.set(*sequence_pos);
                 gbwt.push(*gbwt_pos);
             }
-            sequence_positions.push(SparseVector::try_from(sequence)?);
+            sequence_positions.push(SparseVector::try_from(sequence).map_err(Error::invalid_data)?);
             gbwt_positions.push(gbwt);
         }
 

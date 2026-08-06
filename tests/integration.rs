@@ -11,6 +11,7 @@ use gbz_base::{GAFBase, GAFBaseParams, GraphReference};
 use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput, ReadSet, AlignmentOutput};
 use gbz_base::gaf_sort::{sort_gaf, SortParameters, KeyType};
 use gbz_base::{formats, utils};
+use gbz_base::Error;
 
 use gbz::{GBZ, FullPathName, Orientation};
 use gbz::support::{self, Chains};
@@ -1020,7 +1021,7 @@ fn run_gbz_base_query(
 fn run_subgraph_query_with_gbz(
     graph: &GBZ, path_index: Option<&PathIndex>, chains: Option<&Chains>,
     query: &SubgraphQuery, output_format: &str, with_cigar: bool
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Error> {
     let mut subgraph = Subgraph::new();
     subgraph.from_gbz(graph, path_index, chains, query)?;
 
@@ -1043,7 +1044,7 @@ fn run_subgraph_query_with_gbz(
 // Returns an error if the query itself fails.
 fn run_subgraph_query_with_db(
     interface: &mut GraphInterface, query: &SubgraphQuery, output_format: &str, with_cigar: bool
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Error> {
     let mut subgraph = Subgraph::new();
     subgraph.from_db(interface, query)?;
 

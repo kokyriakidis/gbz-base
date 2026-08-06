@@ -4,6 +4,7 @@ use std::{env, fs, process};
 
 use gbz_base::GBZBase;
 use gbz_base::utils;
+use gbz_base::{Error, Result};
 
 use simple_sds::binaries;
 
@@ -11,7 +12,7 @@ use getopts::Options;
 
 //-----------------------------------------------------------------------------
 
-fn main() -> Result<(), String> {
+fn main() -> Result<()> {
     eprintln!("This tool has been deprecated. Please use `gbz-base construct` instead.");
     eprintln!();
 
@@ -24,9 +25,9 @@ fn main() -> Result<(), String> {
     if binaries::file_exists(&config.db_file) {
         if config.overwrite {
             eprintln!("Overwriting database {}", config.db_file.display());
-            fs::remove_file(&config.db_file).map_err(|x| x.to_string())?;
+            fs::remove_file(&config.db_file)?;
         } else {
-            return Err(format!("Database {} already exists", config.db_file.display()));
+            return Err(Error::invalid_query(format!("Database {} already exists", config.db_file.display())));
         }
     }
 

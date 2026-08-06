@@ -4,13 +4,14 @@ use std::{env, process};
 
 use gbz_base::gaf_sort::{sort_gaf, KeyType, SortParameters};
 use gbz_base::utils;
+use gbz_base::Result;
 use simple_sds::binaries;
 
 use getopts::Options;
 
 //-----------------------------------------------------------------------------
 
-fn main() -> Result<(), String> {
+fn main() -> Result<()> {
     eprintln!("This tool has been deprecated. Please use `gaf-base sort` instead.");
     eprintln!();
 

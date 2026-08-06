@@ -2,6 +2,9 @@
 
 ## Current version
 
+* Fallible operations return `Error` instead of `String`.
+  * An `Error` combines a message with an `ErrorKind` that tells apart failures needing different responses.
+  * `Result<T>` is a shorthand for `Result<T, Error>`.
 * Consolidated binaries:
   * `gbz-base construct` replaces `gbz2db`.
   * `gbz-base query` replaces `query`.
