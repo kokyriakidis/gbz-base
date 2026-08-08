@@ -119,6 +119,25 @@ fn construct(args: ConstructArgs) -> Result<()> {
 //-----------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum HaplotypeSelection {
+    All,
+    Distinct,
+    ReferenceOnly,
+    None,
+}
+
+impl From<HaplotypeSelection> for HaplotypeOutput {
+    fn from(value: HaplotypeSelection) -> Self {
+        match value {
+            HaplotypeSelection::All => HaplotypeOutput::All,
+            HaplotypeSelection::Distinct => HaplotypeOutput::Distinct,
+            HaplotypeSelection::ReferenceOnly => HaplotypeOutput::ReferenceOnly,
+            HaplotypeSelection::None => HaplotypeOutput::None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum OutputFormat {
     Gfa,
     Json,
@@ -198,17 +217,9 @@ struct QueryArgs {
     #[arg(long, value_name = "FILE")]
     chains: Option<String>,
 
-    /// Output distinct haplotypes with weights
-    #[arg(long)]
-    distinct: bool,
-
-    /// Output the reference but no other haplotypes
-    #[arg(long)]
-    reference_only: bool,
-
-    /// Output no haplotypes
-    #[arg(long)]
-    no_haplotypes: bool,
+    /// Haplotype output selection
+    #[arg(long, value_name = "SELECTION", value_enum, default_value_t = HaplotypeSelection::All)]
+    haplotypes: HaplotypeSelection,
 
     /// Output CIGAR strings for the haplotypes
     #[arg(long)]
@@ -226,6 +237,10 @@ struct QueryArgs {
     #[arg(long, value_name = "FILE")]
     gaf_output: Option<String>,
 
+    /// Write GAF output to stdout (no subgraph output)
+    #[arg(long)]
+    gaf_only: bool,
+
     /// Alignment selection (for GAF output)
     #[arg(long, value_name = "SELECTION", value_enum, default_value_t = AlignmentSelection::Clipped)]
     alignments: AlignmentSelection,
@@ -239,12 +254,13 @@ struct QueryConfig {
     format: OutputFormat,
     gaf_base: Option<String>,
     gaf_output: Option<String>,
+    gaf_only: bool,
     alignment_output: AlignmentOutput,
 }
 
 impl QueryConfig {
     fn write_gaf(&self) -> bool {
-        self.gaf_base.is_some() && self.gaf_output.is_some()
+        self.gaf_base.is_some() && (self.gaf_output.is_some() || self.gaf_only)
     }
 }
 
@@ -295,6 +311,7 @@ fn build_query_config(args: QueryArgs) -> Result<QueryConfig> {
         format: args.format,
         gaf_base: args.gaf_base,
         gaf_output: args.gaf_output,
+        gaf_only: args.gaf_only,
         alignment_output: args.alignments.into(),
     })
 }
@@ -323,14 +340,7 @@ fn build_subgraph_query(args: &QueryArgs) -> Result<SubgraphQuery> {
         (false, true) => SnarlOutput::Overlapping,
         (false, false) => SnarlOutput::None,
     };
-    let mut output = HaplotypeOutput::All;
-    if args.distinct {
-        output = HaplotypeOutput::Distinct;
-    } else if args.reference_only {
-        output = HaplotypeOutput::ReferenceOnly;
-    } else if args.no_haplotypes {
-        output = HaplotypeOutput::None;
-    }
+    let output = args.haplotypes.into();
 
     let query = if let Some(offset) = args.offset {
         SubgraphQuery::path_offset(&path_name.unwrap(), offset)
@@ -401,6 +411,9 @@ fn subgraph_statistics(subgraph: &Subgraph) {
 }
 
 fn write_subgraph(subgraph: &Subgraph, config: &QueryConfig) -> Result<()> {
+    if config.gaf_only {
+        return Ok(());
+    }
     let mut output = io::stdout().lock();
     match config.format {
         OutputFormat::Gfa => subgraph.write_gfa(&mut output, config.cigar).map_err(Error::io),
@@ -435,10 +448,15 @@ fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Quer
         );
     }
 
-    let gaf_output_file = config.gaf_output.as_ref().unwrap();
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    let mut gaf_output = options.open(gaf_output_file)?;
+    let (gaf_output_file, mut gaf_output) = if config.gaf_only {
+        (String::from("stdout"), Box::new(io::stdout().lock()) as Box<dyn io::Write>)
+    } else {
+        let gaf_output_file = config.gaf_output.as_ref().unwrap();
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        let gaf_output = options.open(gaf_output_file)?;
+        (gaf_output_file.clone(), Box::new(gaf_output) as Box<dyn io::Write>)
+    };
     formats::write_gaf_file_header(&mut gaf_output).map_err(
         |x| Error::io(format!("Failed to write GAF header to {}: {}", gaf_output_file, x))
     )?;

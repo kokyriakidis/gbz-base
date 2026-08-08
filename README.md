@@ -142,9 +142,11 @@ All other paths will be listed as unknown haplotypes.
 * `--handle N`: Node-based query using handles (GBWT node identifiers) encoded as `2 * node_id + is_reverse`.
 * `--context N`: Extract `N` bp context around the query position (default: 100).
   Context length can be specified using suffixes such as `k` or `M`.
-* `--distinct`: Collapse identical paths in the subgraph and report the number of copies using `WT:i` tags.
-* `--reference-only`: Output the query path but no unknown haplotypes.
-* `--no-haplotypes`: Do not include haplotype paths in the output.
+* `--haplotypes X`: Haplotype output selection:
+  * `all`: Output all haplotypes paths (default).
+  * `distinct`: Collapse identical paths in the subgraph and report the number of copies using `WT:i` tags.
+  * `reference-only`: Output the query path but no unknown haplotypes.
+  * `none`: Do not include haplotype paths in the output.
 * `--cigar`: Output CIGAR strings relative to the query path as `CG:Z` tags.
 * `--format json`: Extract the subgraph in JSON format instead of GFA.
 
@@ -217,6 +219,14 @@ gbz-base query --sample GRCh38 --contig chr12 --offset 1234567 \
 
 By default, this extracts all alignments overlapping with the subgraph and clips them to the subgraph.
 Use option `--alignments overlapping` to avoid clipping or `--alignments contained` to select only alignments fully within the subgraph.
+
+If the subgraph is not needed, GAF-only output (to stdout) can be selected with option `--gaf-only`:
+
+```sh
+gbz-base query --sample GRCh38 --contig chr12 --offset 1234567 \
+    --gaf-base reads.db --gaf-only \
+    graph.db > out.gaf
+```
 
 The GBZ-base can be for the graph the reads were aligned to, or for any supergraph.
 For example, a GBZ-base for a clipped (default) Minigraph–Cactus graph can be used with reads aligned to a corresponding frequency-filtered or personalized (haplotype-sampled) graph.
