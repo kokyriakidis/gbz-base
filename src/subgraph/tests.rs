@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::GBZBase;
+use crate::ErrorKind;
 use crate::{formats, internal, utils};
 
 use gbz::algorithms::find_chains;
@@ -493,8 +494,8 @@ fn queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, usize)>) {
         SubgraphQuery::path_interval(&path_a, 1..4).with_context(0).with_snarls(SnarlOutput::Overlapping).with_haplotypes(HaplotypeOutput::All),
 
         // A snarl in both orientations.
-        SubgraphQuery::between(support::encode_node(11, Orientation::Forward), support::encode_node(14, Orientation::Forward), None).with_haplotypes(HaplotypeOutput::All),
-        SubgraphQuery::between(support::encode_node(14, Orientation::Reverse), support::encode_node(11, Orientation::Reverse), None).with_haplotypes(HaplotypeOutput::All),
+        SubgraphQuery::between(support::encode_node(11, Orientation::Forward), support::encode_node(14, Orientation::Forward)).with_haplotypes(HaplotypeOutput::All),
+        SubgraphQuery::between(support::encode_node(14, Orientation::Reverse), support::encode_node(11, Orientation::Reverse)).with_haplotypes(HaplotypeOutput::All),
 
         // We can find the same snarl starting from an internal node.
         SubgraphQuery::nodes([12]).with_context(0).with_snarls(SnarlOutput::Overlapping).with_haplotypes(HaplotypeOutput::All),
@@ -779,6 +780,105 @@ fn subgraph_from_db() {
 
 //-----------------------------------------------------------------------------
 
+fn max_temporary_nodes(query: &SubgraphQuery, final_nodes: &[usize]) -> usize {
+    let expected_nodes = final_nodes.len();
+    if !query.is_reference_based() {
+        return expected_nodes;
+    }
+
+    // We must include all nodes starting from the nearest indexed position that
+    // are not in the final subgraph. This assumes that the indexed position is
+    // at the start of the path.
+    const PATH_A: &[usize] = &[11, 12, 14, 15, 17];
+    const PATH_B: &[usize] = &[21, 22, 24, 25];
+    for ref_path in [PATH_A, PATH_B] {
+        for offset in 0..ref_path.len() {
+            let node_id = ref_path[offset];
+            if final_nodes.contains(&node_id) {
+                return expected_nodes + offset;
+            }
+        }
+    }
+
+    expected_nodes
+}
+
+fn expect_limit_exceeded(result: Result<()>, query: &SubgraphQuery) {
+    match result {
+        Ok(_) => {
+            panic!("Query {} should have failed due to limit", query);
+        },
+        Err(err) => {
+            assert_eq!(err.kind(), ErrorKind::LimitExceeded, "Query {} failed with unexpected error: {}", query, err);
+        },
+    }
+}
+
+#[test]
+fn subgraph_from_gbz_with_limit() {
+    let (graph, path_index) = internal::load_gbz_and_create_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    let chains = internal::load_chains("example.chains");
+    let (queries, truth) = queries_and_truth();
+    for (query, (true_nodes, path_count)) in queries.iter().zip(truth.iter()) {
+        if true_nodes.is_empty() {
+            continue;
+        }
+
+        let failing_query = query.clone().with_limit(Some(true_nodes.len() - 1));
+        let mut subgraph = Subgraph::new();
+        let result = subgraph.from_gbz(&graph, Some(&path_index), Some(&chains), &failing_query);
+        expect_limit_exceeded(result, &failing_query);
+
+        let limit = max_temporary_nodes(&query, &true_nodes);
+        let successful_query = query.clone().with_limit(Some(limit));
+        let mut subgraph = Subgraph::new();
+        let result = subgraph.from_gbz(&graph, Some(&path_index), Some(&chains), &successful_query);
+        if let Err(err) = result {
+            panic!("Failed to create subgraph for query {}: {}", successful_query, err);
+        }
+        check_subgraph(&graph, &subgraph, &true_nodes, *path_count, &successful_query.to_string());
+    }
+}
+
+#[test]
+fn subgraph_from_db_with_limit() {
+    let gbz_file = support::get_test_data("example.gbz");
+    let gbz_graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains_file = utils::get_test_data("example.chains");
+    let db_file = serialize::temp_file_name("subgraph-from-db");
+    let result = GBZBase::create_from_files(&gbz_file, Some(&chains_file), &db_file);
+    assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
+    let mut database = GBZBase::open(&db_file).unwrap();
+    let mut graph = GraphInterface::new(&mut database).unwrap();
+
+    let (queries, truth) = queries_and_truth();
+    for (query, (true_nodes, path_count)) in queries.iter().zip(truth.iter()) {
+        if true_nodes.is_empty() {
+            continue;
+        }
+
+        let failing_query = query.clone().with_limit(Some(true_nodes.len() - 1));
+        let mut subgraph = Subgraph::new();
+        let result = subgraph.from_db(&mut graph, &failing_query);
+        expect_limit_exceeded(result, &failing_query);
+
+        let limit = max_temporary_nodes(&query, &true_nodes);
+        let successful_query = query.clone().with_limit(Some(limit));
+        let mut subgraph = Subgraph::new();
+        let result = subgraph.from_db(&mut graph, &successful_query);
+        if let Err(err) = result {
+            panic!("Failed to create subgraph for query {}: {}", successful_query, err);
+        }
+        check_subgraph(&gbz_graph, &subgraph, &true_nodes, *path_count, &successful_query.to_string());
+    }
+
+    drop(graph);
+    drop(database);
+    fs::remove_file(&db_file).unwrap();
+}
+
+//-----------------------------------------------------------------------------
+
 #[test]
 fn manual_gbz_queries() {
     let (graph, path_index) = internal::load_gbz_and_create_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
@@ -786,6 +886,7 @@ fn manual_gbz_queries() {
     let (queries, truth) = queries_and_truth();
     for (query, (true_nodes, path_count)) in queries.iter().zip(truth.iter()) {
         let mut subgraph = Subgraph::new();
+        subgraph.set_limit(query.limit());
         let mut reference_path = None;
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
@@ -818,8 +919,8 @@ fn manual_gbz_queries() {
                     panic!("Query {} failed: {}", query, err);
                 }
             },
-            QueryType::Between((start, end), limit) => {
-                let result = subgraph.between_nodes(GraphReference::Gbz(&graph), *start, *end, *limit);
+            QueryType::Between(start, end) => {
+                let result = subgraph.between_nodes(GraphReference::Gbz(&graph), *start, *end);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
@@ -861,6 +962,7 @@ fn manual_db_queries() {
     let (queries, truth) = queries_and_truth();
     for (query, (true_nodes, path_count)) in queries.iter().zip(truth.iter()) {
         let mut subgraph = Subgraph::new();
+        subgraph.set_limit(query.limit());
         let mut reference_path = None;
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
@@ -893,8 +995,8 @@ fn manual_db_queries() {
                     panic!("Query {} failed: {}", query, err);
                 }
             },
-            QueryType::Between((start, end), limit) => {
-                let result = subgraph.between_nodes(GraphReference::Db(&mut graph), *start, *end, *limit);
+            QueryType::Between(start, end) => {
+                let result = subgraph.between_nodes(GraphReference::Db(&mut graph), *start, *end);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
@@ -976,12 +1078,12 @@ fn duplicate_gbz_queries() {
                     Err(err) => panic!("Duplicate query {} failed: {}", query, err),
                 }
             },
-            QueryType::Between((start, end), limit) => {
-                let result = subgraph.between_nodes(GraphReference::Gbz(&graph), *start, *end, *limit);
+            QueryType::Between(start, end) => {
+                let result = subgraph.between_nodes(GraphReference::Gbz(&graph), *start, *end);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-                let result = subgraph.between_nodes(GraphReference::Gbz(&graph), *start, *end, *limit);
+                let result = subgraph.between_nodes(GraphReference::Gbz(&graph), *start, *end);
                 match result {
                     Ok(result) => assert_eq!(result, 0, "Duplicate query {} inserted nodes", query),
                     Err(err) => panic!("Duplicate query {} failed: {}", query, err),
@@ -1002,12 +1104,20 @@ fn between_nodes_with_limit() {
 
     for limit in 0..=expected {
         let mut subgraph = Subgraph::new();
-        let result = subgraph.between_nodes(GraphReference::Gbz(&graph), start, end, Some(limit));
+        subgraph.set_limit(Some(limit));
+        let result = subgraph.between_nodes(GraphReference::Gbz(&graph), start, end);
         if limit < expected {
-            if let Ok(inserted) = result {
-                panic!("Found {} nodes between ({} {}) and ({} {}) with limit {}; expected {}",
+            match result {
+                Ok(inserted) => panic!("Found {} nodes between ({} {}) and ({} {}) with limit {}; expected {}",
                     inserted, start_id, start_o, end_id, end_o, limit, expected
-                );
+                ),
+                Err(err) => {
+                    assert_eq!(
+                        err.kind(), ErrorKind::LimitExceeded,
+                        "Unexpected error for nodes between ({} {}) and ({} {}) with limit {}: {}",
+                        start_id, start_o, end_id, end_o, limit, err
+                    );
+                }
             }
         } else {
             if let Err(err) = result {

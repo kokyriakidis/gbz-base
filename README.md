@@ -140,6 +140,8 @@ All other paths will be listed as unknown haplotypes.
 ### Other options
 
 * `--handle N`: Node-based query using handles (GBWT node identifiers) encoded as `2 * node_id + is_reverse`.
+* `--limit N`: Abort the query if subgraph size exceeds `N` nodes.
+  The limit can be specified using suffixes such as `k` or `M`.
 * `--context N`: Extract `N` bp context around the query position (default: 100).
   Context length can be specified using suffixes such as `k` or `M`.
 * `--haplotypes X`: Haplotype output selection:
@@ -169,9 +171,7 @@ If no orientation is provided  (e.g. `12345+` or `12401-`), the boundary nodes a
 The query extracts all nodes and snarls in the chain between (and including) the boundary nodes but no greedy context.
 
 If the boundary nodes are not in the same chain or they are given in the wrong order, the outcome is unpredictable.
-To avoid extracting most of the chromosome, a safety limit for the number of nodes may be given with `--limit N`.
-The limit can be specified using suffixes such as `k` or `M`.
-If the limit is exceeded, the query will fail.
+A safety limit (`--limit`) can be useful for dealing with such situations.
 
 ### Extracting snarls covered by a query
 
@@ -191,6 +191,8 @@ The extended subgraph can be much larger than the original one, if:
 * The reference sample contains a large deletion in the subgraph.
 * Context length (`--context`) is non-zero and there is a large deletion in any sample within the context.
 
+A safety limit (`--limit`) can be used to deal with such situations.
+
 ### Extracting snarls overlapping with a query
 
 We can also extend the subgraph with all overlapping snarls:
@@ -206,6 +208,7 @@ If there are no chain links in the subgraph, the query instead tries to find a s
 Option `--extend-snarls` requires that the subgraph is weakly connected.
 It does not work with node-based queries with multiple nodes.
 If the graph contains large snarls, the extended subgraph can be much larger than the original one.
+A safety limit (`--limit`) can be useful here as well.
 
 ### Extracting alignments
 

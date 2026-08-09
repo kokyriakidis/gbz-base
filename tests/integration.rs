@@ -953,6 +953,7 @@ fn append_query_variants(
     }
 }
 
+// This does not generate between queries, because they only make sense with specific nodes.
 fn generate_queries(gfa_file: &PathBuf, include_variants: bool) -> (Vec<SubgraphQuery>, Vec<Vec<String>>) {
     const NUM_QUERIES: usize = 3;
 
@@ -1108,6 +1109,9 @@ fn gbz_base_query() {
     }
 }
 
+// Here we also test setting a safety limit.
+// We already know from unit tests that the limit will trigger with all kinds of queries,
+// so we don't need to repeat that here.
 #[test]
 fn gbz_base_query_between() {
     let mut temp_files = TempFileHandler::new();
@@ -1131,9 +1135,8 @@ fn gbz_base_query_between() {
         for limit in [None, Some(10), Some(100), Some(1000)] {
             let query = SubgraphQuery::between(
                 support::encode_node(start, Orientation::Forward),
-                support::encode_node(end, Orientation::Forward),
-                limit
-            );
+                support::encode_node(end, Orientation::Forward)
+            ).with_limit(limit);
             let mut args = vec![
                 String::from("--between"),
                 format!("{}:{}", start, end),

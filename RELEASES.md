@@ -16,6 +16,7 @@
 * Query improvements:
   * Haplotype output selection with `--haplotypes`, with an option for no haplotypes.
   * Option `--gaf-only` for writing the alignments instead of the subgraph to stdout.
+  * Safety limit for subgraph size can be set for all query types.
 * Bug fixes:
   * `gaf-base decompress` works correctly with a reference-free GAF-base.
   * Multithreaded stable GAF sorting works correctly.

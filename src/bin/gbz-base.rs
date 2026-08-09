@@ -197,7 +197,7 @@ struct QueryArgs {
     #[arg(short, long, value_name = "INT[+-]:INT[+-]")]
     between: Option<String>,
 
-    /// Safety limit for the number of nodes in --between
+    /// Safety limit for the number of nodes in the subgraph
     #[arg(long, value_name = "INT", value_parser = parse_quantity)]
     limit: Option<usize>,
 
@@ -349,7 +349,7 @@ fn build_subgraph_query(args: &QueryArgs) -> Result<SubgraphQuery> {
         SubgraphQuery::path_interval(&path_name.unwrap(), interval)
     } else if let Some(s) = &args.between {
         let (start, end) = parse_between(s)?;
-        SubgraphQuery::between(start, end, args.limit)
+        SubgraphQuery::between(start, end)
     } else {
         let mut nodes = Vec::with_capacity(args.node.len() + args.handle.len());
         for id in &args.node {
@@ -361,7 +361,7 @@ fn build_subgraph_query(args: &QueryArgs) -> Result<SubgraphQuery> {
         SubgraphQuery::nodes(nodes)
     };
 
-    Ok(query.with_context(args.context).with_snarls(snarls).with_haplotypes(output))
+    Ok(query.with_limit(args.limit).with_context(args.context).with_snarls(snarls).with_haplotypes(output))
 }
 
 fn parse_interval(s: &str) -> Result<Range<usize>> {
