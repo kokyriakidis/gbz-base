@@ -303,7 +303,7 @@ If you are not targeting the browser, you will have to open and read the files a
 
 ## Citing GBZ-base and GAF-base
 
-Jouni Sirén and Benedict Paten: **GBZ-base and GAF-base: Indexed pangenome file formats**.
+Jouni Sirén, Benedict Paten, and the Human Pangenome Reference Consortium: **GBZ-base and GAF-base: Indexed pangenome file formats**.
 bioRxiv, 2026.
 DOI: [10.64898/2026.07.10.737775](https://doi.org/10.64898/2026.07.10.737775)
 
