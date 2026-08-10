@@ -260,7 +260,7 @@ struct QueryConfig {
 
 impl QueryConfig {
     fn write_gaf(&self) -> bool {
-        self.gaf_base.is_some() && (self.gaf_output.is_some() || self.gaf_only)
+        self.gaf_base.is_some()
     }
 }
 
@@ -302,6 +302,7 @@ fn query(args: QueryArgs) -> Result<()> {
 }
 
 fn build_query_config(args: QueryArgs) -> Result<QueryConfig> {
+    validate_gaf_output(&args)?;
     let query = build_subgraph_query(&args)?;
     Ok(QueryConfig {
         filename: args.filename,
@@ -314,6 +315,19 @@ fn build_query_config(args: QueryArgs) -> Result<QueryConfig> {
         gaf_only: args.gaf_only,
         alignment_output: args.alignments.into(),
     })
+}
+
+fn validate_gaf_output(args: &QueryArgs) -> Result<()> {
+    if args.gaf_base.is_none() && (args.gaf_output.is_some() || args.gaf_only) {
+        return Err(Error::invalid_query("GAF output requires --gaf-base"));
+    }
+    if args.gaf_base.is_some() && !(args.gaf_output.is_some() || args.gaf_only) {
+        return Err(Error::invalid_query("Option --gaf-base requires --gaf-output or --gaf-only"));
+    }
+    if args.gaf_only && args.gaf_output.is_some() {
+        return Err(Error::invalid_query("Options --gaf-only and --gaf-output are mutually exclusive"));
+    }
+    Ok(())
 }
 
 fn build_subgraph_query(args: &QueryArgs) -> Result<SubgraphQuery> {
