@@ -6,8 +6,8 @@ SQLite-based file formats for:
 * Sequence alignments to a pangenome graph in [GAF format](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md).
 
 The formats are intended for interactive applications, where you want to access parts of the graph immediately without loading the entire graph into memory.
-
-Both file formats are under development and can change without warning.
+For best performance, the database files should be on a fast local SSD.
+The GBZ-base file format has stabilized, while GAF-base is still under active development.
 
 ## Building
 
@@ -300,6 +300,12 @@ let blob = await fetch(blobImport.default);
 You can then use a [library like `browser-wasi-shim`](https://github.com/bjorn3/browser_wasi_shim#readme) to execute the command-line tool with particular arguments in a particular filesystem.
 
 If you are not targeting the browser, you will have to open and read the files at their actual filesystem paths, `node_modules/gbz-base/target/wasm32-wasi/release/gbz2db.wasm` and `node_modules/gbz-base/target/wasm32-wasi/release/query.wasm`. Node itself cannot `import` or `require()` a WASI file in a useful way, and this module doesn't itself include any JavaScript code to help find and load the WASM files.
+
+## Citing GBZ-base and GAF-base
+
+Jouni Sirén and Benedict Paten: **GBZ-base and GAF-base: Indexed pangenome file formats**.
+bioRxiv, 2026.
+DOI: [10.64898/2026.07.10.737775](https://doi.org/10.64898/2026.07.10.737775)
 
 ## Notes
 
