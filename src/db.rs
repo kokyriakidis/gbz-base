@@ -229,8 +229,9 @@ impl GBZBase {
         } else {
             eprintln!("Finding top-level chains in the graph");
             let chains = algorithms::find_chains(&graph);
-            if let Some(components) = chains.components() && chains.len() != components {
-                eprintln!("Warning: Found top-level chains for {} components out of {}", chains.len(), components);
+            let total_chains = chains.len() + chains.trivial_chains().unwrap_or(0);
+            if let Some(components) = chains.components() && total_chains != components {
+                eprintln!("Warning: Found top-level chains for {} components out of {}", total_chains, components);
                 eprintln!("Warning: Queries using --snarls or --extend-snarls may not work correctly");
             }
             let components = if let Some(components) = chains.components() {
