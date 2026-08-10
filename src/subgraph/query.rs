@@ -17,6 +17,8 @@ pub enum HaplotypeOutput {
     Distinct,
     /// Output only the reference path.
     ReferenceOnly,
+    /// No haplotypes in the output.
+    None,
 }
 
 impl Display for HaplotypeOutput {
@@ -25,6 +27,7 @@ impl Display for HaplotypeOutput {
             HaplotypeOutput::All => write!(f, "all"),
             HaplotypeOutput::Distinct => write!(f, "distinct"),
             HaplotypeOutput::ReferenceOnly => write!(f, "reference only"),
+            HaplotypeOutput::None => write!(f, "none"),
         }
     }
 }
@@ -58,8 +61,8 @@ pub(super) enum QueryType {
     PathInterval(FullPathName, usize),
     // Set of node identifiers.
     Nodes(BTreeSet<usize>),
-    // Subgraph between two handles in the same chain, with an optional safety limit for the number of nodes extracted.
-    Between((usize, usize), Option<usize>),
+    // Subgraph between two handles in the same chain.
+    Between(usize, usize),
 }
 
 //-----------------------------------------------------------------------------
@@ -78,6 +81,9 @@ pub(super) enum QueryType {
 /// assert_eq!(query.snarls(), SubgraphQuery::DEFAULT_SNARLS);
 /// assert_eq!(query.output(), SubgraphQuery::DEFAULT_OUTPUT);
 ///
+/// let query = query.with_limit(Some(100));
+/// assert_eq!(query.limit(), Some(100));
+///
 /// let query = query.with_context(1000);
 /// assert_eq!(query.context(), 1000);
 ///
@@ -90,6 +96,9 @@ pub(super) enum QueryType {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubgraphQuery {
     query_type: QueryType,
+
+    // Optional safety limit for the size of the subgraph in nodes.
+    limit: Option<usize>,
 
     // Context size around the query position(s) in bp.
     context: usize,
@@ -121,6 +130,7 @@ impl SubgraphQuery {
         path_name.fragment = offset;
         SubgraphQuery {
             query_type: QueryType::PathOffset(path_name),
+            limit: None,
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
             output: Self::DEFAULT_OUTPUT,
@@ -137,6 +147,7 @@ impl SubgraphQuery {
         path_name.fragment = interval.start;
         SubgraphQuery {
             query_type: QueryType::PathInterval(path_name, interval.len()),
+            limit: None,
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
             output: Self::DEFAULT_OUTPUT,
@@ -147,6 +158,7 @@ impl SubgraphQuery {
     pub fn nodes(nodes: impl IntoIterator<Item = usize>) -> Self {
         SubgraphQuery {
             query_type: QueryType::Nodes(nodes.into_iter().collect()),
+            limit: None,
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
             output: Self::DEFAULT_OUTPUT,
@@ -156,15 +168,20 @@ impl SubgraphQuery {
     /// Creates a query that extracts a subgraph between two handles in the same chain.
     ///
     /// This query ignores context length and the snarl extraction flag.
-    /// An optional safety limit for the size of the subgraph in nodes can be provided.
     /// If the nodes are not in the same chain in the given order, the subgraph can otherwise be arbitrarily large.
-    pub fn between(start: usize, end: usize, limit: Option<usize>) -> Self {
+    pub fn between(start: usize, end: usize) -> Self {
         SubgraphQuery {
-            query_type: QueryType::Between((start, end), limit),
+            query_type: QueryType::Between(start, end),
+            limit: None,
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
             output: Self::DEFAULT_OUTPUT,
         }
+    }
+
+    /// Returns an updated query with the given limit for the size of the subgraph in nodes.
+    pub fn with_limit(self, limit: Option<usize>) -> Self {
+        SubgraphQuery { limit, ..self }
     }
 
     /// Returns an updated query with the given context length.
@@ -181,6 +198,11 @@ impl SubgraphQuery {
         SubgraphQuery { snarls, ..self }
     }
 
+    #[deprecated(since = "0.6.0", note = "Use `with_haplotypes` instead")]
+    pub fn with_output(self, output: HaplotypeOutput) -> Self {
+        self.with_haplotypes(output)
+    }
+
     /// Returns an updated query with the given haplotype output option.
     ///
     /// See [`Self::DEFAULT_OUTPUT`] for the default value.
@@ -188,7 +210,7 @@ impl SubgraphQuery {
     /// # Panics
     ///
     /// Panics if this is a node-based query and the output would be [`HaplotypeOutput::ReferenceOnly`].
-    pub fn with_output(self, output: HaplotypeOutput) -> Self {
+    pub fn with_haplotypes(self, output: HaplotypeOutput) -> Self {
         if self.is_node_based() {
             assert!(output != HaplotypeOutput::ReferenceOnly, "Reference-only output is not supported for node-based queries");
         }
@@ -199,7 +221,7 @@ impl SubgraphQuery {
         &self.query_type
     }
 
-    /// Returns `true` if this is a reference-based query.
+    /// Returns `true` if this is a reference-based / path-based query.
     pub fn is_reference_based(&self) -> bool {
         matches!(self.query_type, QueryType::PathOffset(_) | QueryType::PathInterval(_, _))
     }
@@ -212,6 +234,11 @@ impl SubgraphQuery {
     /// Returns `true` if this is a multi-node query.
     pub fn is_multi_node(&self) -> bool {
         matches!(self.query_type, QueryType::Nodes(ref nodes) if nodes.len() > 1)
+    }
+
+    /// Returns the safety limit for the size of the subgraph in nodes.
+    pub fn limit(&self) -> Option<usize> {
+        self.limit
     }
 
     /// Returns the context length (in bp) for the query.
@@ -232,26 +259,34 @@ impl SubgraphQuery {
 
 impl Display for SubgraphQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let context_str = match self.snarls() {
-            SnarlOutput::None => format!("{}", self.context),
-            SnarlOutput::Contained => format!("{} with contained snarls", self.context),
-            SnarlOutput::Overlapping => format!("{} with overlapping snarls", self.context),
-        };
+        // Query itself.
         match self.query_type() {
-            QueryType::PathOffset(path_name) => write!(f, "(path {}, context {}, {})", path_name, context_str, self.output),
-            QueryType::PathInterval(path_name, len) => write!(f, "(path {}, len {}, context {}, {})", path_name, len, context_str, self.output),
-            QueryType::Nodes(nodes) => write!(f, "(nodes {:#?}, context {}, {})", nodes, context_str, self.output),
-            QueryType::Between((start, end), limit) => {
+            QueryType::PathOffset(path_name) => write!(f, "(path {}", path_name)?,
+            QueryType::PathInterval(path_name, len) => write!(f, "(path {}, len {}", path_name, len)?,
+            QueryType::Nodes(nodes) => write!(f, "(nodes {:#?}", nodes)?,
+            QueryType::Between(start, end) => {
                 let (start_id, start_o) = support::decode_node(*start);
                 let (end_id, end_o) = support::decode_node(*end);
-                let limit_str = if let Some(limit) = limit {
-                    format!(", limit {}", limit)
-                } else {
-                    String::new()
-                };
-                write!(f, "(between ({} {}) and ({} {}){}, {})", start_id, start_o, end_id, end_o, limit_str, self.output)
-            },
+                write!(f, "(between ({} {}) and ({} {})", start_id, start_o, end_id, end_o)?;
+            }
         }
+
+        // Safety limit.
+        if let Some(limit) = self.limit() {
+            write!(f, ", limit {}", limit)?;
+        }
+
+        // Context length and snarls.
+        match self.snarls() {
+            SnarlOutput::None => write!(f, ", context {}", self.context)?,
+            SnarlOutput::Contained => write!(f, ", context {} with contained snarls", self.context)?,
+            SnarlOutput::Overlapping => write!(f, ", context {} with overlapping snarls", self.context)?,
+        }
+
+        // Haplotype output.
+        write!(f, ", {})", self.output)?;
+
+        Ok(())
     }
 }
 

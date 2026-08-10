@@ -6,7 +6,7 @@
 //! All other paths within the subgraph can also be extracted, but they will not have any true metadata associated with them.
 
 use crate::{GBZRecord, GBZPath};
-use crate::error::{Error, Result};
+use crate::{Error, Result};
 use crate::{GraphInterface, GraphReference};
 use crate::PathIndex;
 use crate::{SubgraphQuery, HaplotypeOutput, SnarlOutput};
@@ -56,6 +56,12 @@ pub mod query;
 /// * [`Subgraph::extract_snarls`] to extend the subgraph with overlapping top-level snarls.
 ///
 /// [`Subgraph::from_gbz`] and [`Subgraph::from_db`] are integrated methods for extracting a subgraph with paths using a [`SubgraphQuery`].
+///
+/// A safety limit for the size of the subgraph can be set with [`Subgraph::set_limit`].
+/// It can be used to avoid extracting a much larger subgraph than intended, which could lead to excessive memory usage.
+/// If the safety limit is exceeded, the operation will abort and return [`ErrorKind::LimitExceeded`](crate::ErrorKind::LimitExceeded).
+/// Note that nodes between the nearest indexed position and the query position count towards the limit in a path-based query.
+/// This may cause the limit to be exceeded even if the final subgraph is within the limit.
 ///
 /// `Subgraph` implements a similar graph interface to the node/edge operations of [`GBZ`].
 /// It can also be serialized in GFA and JSON formats using [`Subgraph::write_gfa`] and [`Subgraph::write_json`].
@@ -128,6 +134,9 @@ pub struct Subgraph {
     // Node records for the subgraph.
     records: BTreeMap<usize, GBZRecord>,
 
+    // Safety limit for the number of nodes in the subgraph.
+    limit: Option<usize>,
+
     // Paths in the subgraph.
     paths: Vec<PathInfo>,
 
@@ -151,6 +160,14 @@ impl Subgraph {
     /// Creates a new empty subgraph.
     pub fn new() -> Self {
         Subgraph::default()
+    }
+
+    /// Sets a safety limit for the size of the subgraph in nodes.
+    ///
+    /// Any query or operation updating the subgraph will abort if the limit would be exceeded.
+    /// The return value will then be [`ErrorKind::LimitExceeded`](crate::ErrorKind::LimitExceeded).
+    pub fn set_limit(&mut self, limit: Option<usize>) {
+        self.limit = limit;
     }
 
     /// Returns the path position for the haplotype offset represented by the query position.
@@ -612,7 +629,8 @@ impl Subgraph {
     /// Inserts all nodes between the given two handles into the subgraph.
     ///
     /// If `start` and `end` are in the same chain in the given order, this will insert all nodes and snarls between them.
-    /// Otherwise the behavior will be unpredictable and it is recommended to set a safety limit to avoid excessive memory usage.
+    /// Otherwise the behavior will be unpredictable.
+    /// It is recommended to set a safety limit with [`Subgraph::set_limit`] to avoid excessive memory usage.
     /// Removes all path information.
     /// Returns the number of inserted nodes.
     ///
@@ -621,7 +639,6 @@ impl Subgraph {
     /// * `graph`: A GBZ-compatible graph.
     /// * `start`: Start handle (inclusive).
     /// * `end`: End handle (inclusive).
-    /// * `limit`: Optional safety limit on the number of inserted nodes.
     ///
     /// # Errors
     ///
@@ -643,13 +660,13 @@ impl Subgraph {
     /// let start = support::encode_node(14, Orientation::Forward);
     /// let end = support::encode_node(17, Orientation::Forward);
     /// let mut subgraph = Subgraph::new();
-    /// let result = subgraph.between_nodes(GraphReference::Gbz(&graph), start, end, None);
+    /// let result = subgraph.between_nodes(GraphReference::Gbz(&graph), start, end);
     /// assert_eq!(result, Ok(4));
     ///
     /// let expected_nodes = [14, 15, 16, 17];
     /// assert!(subgraph.node_iter().eq(expected_nodes.iter().copied()));
     /// ```
-    pub fn between_nodes(&mut self, graph: GraphReference<'_, '_>, start: usize, end: usize, limit: Option<usize>) -> Result<usize> {
+    pub fn between_nodes(&mut self, graph: GraphReference<'_, '_>, start: usize, end: usize) -> Result<usize> {
         self.clear_paths();
 
         // Active handles. We proceed to their successors but not predecessors.
@@ -666,11 +683,6 @@ impl Subgraph {
         while let Some(curr) = active.pop() {
             let (node_id, orientation) = support::decode_node(curr);
             if !self.has_node(node_id) {
-                if let Some(limit) = limit && inserted >= limit {
-                    let (start_id, start_o) = support::decode_node(start);
-                    let (end_id, end_o) = support::decode_node(end);
-                    return Err(Error::limit_exceeded(format!("Found more than {} new nodes between ({}, {}) and ({}, {})", limit, start_id, start_o, end_id, end_o)));
-                }
                 self.add_node_internal(&mut graph, node_id)?;
                 inserted += 1;
             }
@@ -747,10 +759,10 @@ impl Subgraph {
         for (start, end) in boundary_nodes {
             match &mut graph {
                 GraphReference::Gbz(graph) => {
-                    inserted += self.between_nodes(GraphReference::Gbz(graph), start, end, None)?;
+                    inserted += self.between_nodes(GraphReference::Gbz(graph), start, end)?;
                 }
                 GraphReference::Db(graph) => {
-                    inserted += self.between_nodes(GraphReference::Db(graph), start, end, None)?;
+                    inserted += self.between_nodes(GraphReference::Db(graph), start, end)?;
                 },
                 GraphReference::None => {
                     return Err(Error::invalid_query("No graph reference provided"));
@@ -826,6 +838,8 @@ impl Subgraph {
         if (query.snarls() != SnarlOutput::None) && chains.is_none() {
             return Err(Error::invalid_query("Top-level chains are required for extracting snarls"));
         }
+        self.set_limit(query.limit());
+
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
                 let path_index = path_index.ok_or_else(||
@@ -856,11 +870,11 @@ impl Subgraph {
                 self.extract_snarls(GraphReference::Gbz(graph), query.snarls(), chains)?;
                 self.extract_paths(None, query.output())?;
             },
-            QueryType::Between((start, end), limit) => {
+            QueryType::Between(start, end) => {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
                     return Err(Error::invalid_query("Cannot output a reference path in a node-based query"));
                 }
-                self.between_nodes(GraphReference::Gbz(graph), *start, *end, *limit)?;
+                self.between_nodes(GraphReference::Gbz(graph), *start, *end)?;
                 self.extract_paths(None, query.output())?;
             },
         }
@@ -929,6 +943,8 @@ impl Subgraph {
     /// fs::remove_file(&db_file).unwrap();
     /// ```
     pub fn from_db<'reference, 'graph>(&mut self, graph: &'reference mut GraphInterface<'graph>, query: &SubgraphQuery) -> Result<()> {
+        self.set_limit(query.limit());
+
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
                 let reference_path = self.path_pos_from_db(graph, query_pos)?;
@@ -953,11 +969,11 @@ impl Subgraph {
                 self.extract_snarls(GraphReference::Db(graph), query.snarls(), None)?;
                 self.extract_paths(None, query.output())?;
             },
-            QueryType::Between((start, end), limit) => {
+            QueryType::Between(start, end) => {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
                     return Err(Error::invalid_query("Cannot output a reference path in a node-based query"));
                 }
-                self.between_nodes(GraphReference::Db(graph), *start, *end, *limit)?;
+                self.between_nodes(GraphReference::Db(graph), *start, *end)?;
                 self.extract_paths(None, query.output())?;
             },
         }
@@ -1048,6 +1064,9 @@ impl Subgraph {
         output: HaplotypeOutput
     ) -> Result<()> {
         self.clear_paths();
+        if output == HaplotypeOutput::None {
+            return Ok(());
+        }
 
         let ref_pos;
         if let Some((position, name)) = reference_path {
@@ -1167,7 +1186,13 @@ impl Subgraph {
     }
 
     // Adds a new node to the subgraph.
+    // We assume that the node is not already in the subgraph.
+    // The safety limit for subgraph size is checked here.
     fn add_node_internal(&mut self, graph: &mut GraphReference<'_, '_>, node_id: usize) -> Result<()> {
+        if let Some(limit) = self.limit && self.nodes() >= limit {
+            return Err(Error::limit_exceeded(format!("Subgraph size limit of {} nodes exceeded", limit)));
+        }
+
         let forward = graph.gbz_record(support::encode_node(node_id, Orientation::Forward))?;
         let reverse = graph.gbz_record(support::encode_node(node_id, Orientation::Reverse))?;
         self.records.insert(forward.handle(), forward);
@@ -1570,6 +1595,14 @@ impl Subgraph {
     #[inline]
     fn record(&self, handle: usize) -> Option<&GBZRecord> {
         self.records.get(&handle)
+    }
+
+    /// Returns the safety limit for the size of the subgraph in nodes.
+    ///
+    /// Returns [`None`] if the limit is not set.
+    #[inline]
+    pub fn limit(&self) -> Option<usize> {
+        self.limit
     }
 
     /// Returns the number of paths in the subgraph.

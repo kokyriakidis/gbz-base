@@ -315,7 +315,7 @@ impl Config {
             SubgraphQuery::path_interval(&path_name.unwrap(), interval)
         } else if let Some(s) = matches.opt_str("between") {
             let (start, end) = Self::parse_between(&s)?;
-            SubgraphQuery::between(start, end, limit)
+            SubgraphQuery::between(start, end)
         } else {
             let node_strings = matches.opt_strs("node");
             let handle_strings = matches.opt_strs("handle");
@@ -331,7 +331,7 @@ impl Config {
             SubgraphQuery::nodes(nodes)
         };
 
-        Ok(query.with_context(context).with_snarls(snarls).with_output(output))
+        Ok(query.with_limit(limit).with_context(context).with_snarls(snarls).with_haplotypes(output))
     }
 }
 

@@ -910,7 +910,7 @@ fn append_query_variants(
 ) {
     for context in [0, 30, 100] {
         for snarls in [SnarlOutput::None, SnarlOutput::Contained, SnarlOutput::Overlapping] {
-            for output in [HaplotypeOutput::All, HaplotypeOutput::Distinct, HaplotypeOutput::ReferenceOnly] {
+            for output in [HaplotypeOutput::All, HaplotypeOutput::Distinct, HaplotypeOutput::ReferenceOnly, HaplotypeOutput::None] {
                 if query.is_node_based() && output == HaplotypeOutput::ReferenceOnly {
                     // No reference path.
                     continue;
@@ -919,7 +919,7 @@ fn append_query_variants(
                     // Not implemented.
                     continue;
                 }
-                queries.push(query.clone().with_context(context).with_snarls(snarls).with_output(output));
+                queries.push(query.clone().with_context(context).with_snarls(snarls).with_haplotypes(output));
                 let mut args = args.to_vec();
                 args.push(String::from("--context"));
                 args.push(context.to_string());
@@ -932,13 +932,19 @@ fn append_query_variants(
                         args.push(String::from("--extend-snarls"));
                     },
                 }
+                args.push(String::from("--haplotypes"));
                 match output {
-                    HaplotypeOutput::All => {},
+                    HaplotypeOutput::All => {
+                        args.push(String::from("all"));
+                    },
                     HaplotypeOutput::Distinct => {
-                        args.push(String::from("--distinct"));
+                        args.push(String::from("distinct"));
                     },
                     HaplotypeOutput::ReferenceOnly => {
-                        args.push(String::from("--reference-only"));
+                        args.push(String::from("reference-only"));
+                    },
+                    HaplotypeOutput::None => {
+                        args.push(String::from("none"));
                     },
                 }
                 arg_lists.push(args);
@@ -947,6 +953,7 @@ fn append_query_variants(
     }
 }
 
+// This does not generate between queries, because they only make sense with specific nodes.
 fn generate_queries(gfa_file: &PathBuf, include_variants: bool) -> (Vec<SubgraphQuery>, Vec<Vec<String>>) {
     const NUM_QUERIES: usize = 3;
 
@@ -1102,6 +1109,9 @@ fn gbz_base_query() {
     }
 }
 
+// Here we also test setting a safety limit.
+// We already know from unit tests that the limit will trigger with all kinds of queries,
+// so we don't need to repeat that here.
 #[test]
 fn gbz_base_query_between() {
     let mut temp_files = TempFileHandler::new();
@@ -1125,9 +1135,8 @@ fn gbz_base_query_between() {
         for limit in [None, Some(10), Some(100), Some(1000)] {
             let query = SubgraphQuery::between(
                 support::encode_node(start, Orientation::Forward),
-                support::encode_node(end, Orientation::Forward),
-                limit
-            );
+                support::encode_node(end, Orientation::Forward)
+            ).with_limit(limit);
             let mut args = vec![
                 String::from("--between"),
                 format!("{}:{}", start, end),
@@ -1161,14 +1170,21 @@ fn gbz_base_query_between() {
 fn run_gbz_gaf_base_query(
     temp_files: &mut TempFileHandler,
     graph_file: &PathBuf, gaf_base_file: &PathBuf,
-    query_args: &[String], alignment_output: Option<AlignmentOutput>
+    query_args: &[String], alignment_output: Option<AlignmentOutput>,
+    gaf_only: bool
 ) -> Vec<u8> {
     let mut query_args = query_args.to_vec();
     query_args.push(String::from("--gaf-base"));
     query_args.push(gaf_base_file.to_str().unwrap().to_string());
-    query_args.push(String::from("--gaf-output"));
-    let gaf_output_file = temp_files.new_file("gaf-base-output");
-    query_args.push(gaf_output_file.to_str().unwrap().to_string());
+    let gaf_output_file = if gaf_only {
+        query_args.push(String::from("--gaf-only"));
+        None
+    } else {
+        query_args.push(String::from("--gaf-output"));
+        let gaf_output_file = temp_files.new_file("gaf-base-output");
+        query_args.push(gaf_output_file.to_str().unwrap().to_string());
+        Some(gaf_output_file)
+    };
     match alignment_output {
         Some(output) => {
             query_args.push(String::from("--alignments"));
@@ -1179,9 +1195,11 @@ fn run_gbz_gaf_base_query(
 
     let output = run_gbz_base_query(graph_file, None, &query_args, None, false);
     assert!(output.status.success(), "gbz-base query with args {:?} failed with status: {}", query_args, output.status);
-    let gaf_data = fs::read(&gaf_output_file).expect("Failed to read GAF output file");
-
-    gaf_data
+    if let Some(gaf_output_file) = gaf_output_file {
+        fs::read(&gaf_output_file).expect("Failed to read GAF output file")
+    } else {
+        output.stdout
+    }
 }
 
 fn write_gaf(read_set: &ReadSet, subgraph: &Subgraph) -> Vec<u8> {
@@ -1245,13 +1263,19 @@ fn gbz_base_query_with_gaf_base() {
     for (query, args) in queries.iter().zip(arg_lists.iter()) {
         for alignment_output in [None, Some(AlignmentOutput::Overlapping), Some(AlignmentOutput::Clipped), Some(AlignmentOutput::Contained)] {
 
-            let binary_gbz_gaf = run_gbz_gaf_base_query(&mut temp_files, &graph_file, &gaf_base_file, args, alignment_output);
+            let binary_gbz_gaf = run_gbz_gaf_base_query(&mut temp_files, &graph_file, &gaf_base_file, args, alignment_output, false);
             let output = alignment_output.unwrap_or(AlignmentOutput::Clipped);
             let library_gbz_gaf = run_subgraph_query_with_gbz_gaf(&gbz, Some(&path_index), &gaf_base, &query, output);
             let gbz_gaf_query_ok = binary_gbz_gaf == library_gbz_gaf;
             assert!(gbz_gaf_query_ok, "Output mismatch for query {} with alignment output {}", query, output);
 
-            let binary_db_gaf = run_gbz_gaf_base_query(&mut temp_files, &gbz_base_file, &gaf_base_file, args, alignment_output);
+            if alignment_output.is_none() {
+                let gaf_only = run_gbz_gaf_base_query(&mut temp_files, &graph_file, &gaf_base_file, args, alignment_output, true);
+                let gaf_only_ok = gaf_only == library_gbz_gaf;
+                assert!(gaf_only_ok, "Output mismatch for query {} with --gaf-only", query);
+            }
+
+            let binary_db_gaf = run_gbz_gaf_base_query(&mut temp_files, &gbz_base_file, &gaf_base_file, args, alignment_output, false);
             let library_db_gaf = run_subgraph_query_with_db_gaf(&mut interface, &gaf_base, &query, output);
             let db_gaf_query_ok = binary_db_gaf == library_db_gaf;
             assert!(db_gaf_query_ok, "Output mismatch for query {} with alignment output {}", query, output);

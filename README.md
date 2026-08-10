@@ -140,10 +140,15 @@ All other paths will be listed as unknown haplotypes.
 ### Other options
 
 * `--handle N`: Node-based query using handles (GBWT node identifiers) encoded as `2 * node_id + is_reverse`.
+* `--limit N`: Abort the query if subgraph size exceeds `N` nodes.
+  The limit can be specified using suffixes such as `k` or `M`.
 * `--context N`: Extract `N` bp context around the query position (default: 100).
   Context length can be specified using suffixes such as `k` or `M`.
-* `--distinct`: Collapse identical paths in the subgraph and report the number of copies using `WT:i` tags.
-* `--reference-only`: Output the query path but no unknown haplotypes.
+* `--haplotypes X`: Haplotype output selection:
+  * `all`: Output all haplotypes paths (default).
+  * `distinct`: Collapse identical paths in the subgraph and report the number of copies using `WT:i` tags.
+  * `reference-only`: Output the query path but no unknown haplotypes.
+  * `none`: Do not include haplotype paths in the output.
 * `--cigar`: Output CIGAR strings relative to the query path as `CG:Z` tags.
 * `--format json`: Extract the subgraph in JSON format instead of GFA.
 
@@ -166,9 +171,7 @@ If no orientation is provided  (e.g. `12345+` or `12401-`), the boundary nodes a
 The query extracts all nodes and snarls in the chain between (and including) the boundary nodes but no greedy context.
 
 If the boundary nodes are not in the same chain or they are given in the wrong order, the outcome is unpredictable.
-To avoid extracting most of the chromosome, a safety limit for the number of nodes may be given with `--limit N`.
-The limit can be specified using suffixes such as `k` or `M`.
-If the limit is exceeded, the query will fail.
+A safety limit (`--limit`) can be useful for dealing with such situations.
 
 ### Extracting snarls covered by a query
 
@@ -188,6 +191,8 @@ The extended subgraph can be much larger than the original one, if:
 * The reference sample contains a large deletion in the subgraph.
 * Context length (`--context`) is non-zero and there is a large deletion in any sample within the context.
 
+A safety limit (`--limit`) can be used to deal with such situations.
+
 ### Extracting snarls overlapping with a query
 
 We can also extend the subgraph with all overlapping snarls:
@@ -203,6 +208,7 @@ If there are no chain links in the subgraph, the query instead tries to find a s
 Option `--extend-snarls` requires that the subgraph is weakly connected.
 It does not work with node-based queries with multiple nodes.
 If the graph contains large snarls, the extended subgraph can be much larger than the original one.
+A safety limit (`--limit`) can be useful here as well.
 
 ### Extracting alignments
 
@@ -216,6 +222,14 @@ gbz-base query --sample GRCh38 --contig chr12 --offset 1234567 \
 
 By default, this extracts all alignments overlapping with the subgraph and clips them to the subgraph.
 Use option `--alignments overlapping` to avoid clipping or `--alignments contained` to select only alignments fully within the subgraph.
+
+If the subgraph is not needed, GAF-only output (to stdout) can be selected with option `--gaf-only`:
+
+```sh
+gbz-base query --sample GRCh38 --contig chr12 --offset 1234567 \
+    --gaf-base reads.db --gaf-only \
+    graph.db > out.gaf
+```
 
 The GBZ-base can be for the graph the reads were aligned to, or for any supergraph.
 For example, a GBZ-base for a clipped (default) Minigraph–Cactus graph can be used with reads aligned to a corresponding frequency-filtered or personalized (haplotype-sampled) graph.
