@@ -1,7 +1,8 @@
 # GBZ-base releases
 
-## Current version
+## GBZ-base 0.6.0 (2026-08-11)
 
+* Database versions: GBZ-base version 4, GAF-base version 4
 * Fallible operations return `Error` instead of `String`.
   * An `Error` combines a message with an `ErrorKind` that tells apart failures needing different responses.
   * `Result<T>` is a shorthand for `Result<T, Error>`.
@@ -86,10 +87,10 @@ This is the initial release of GBZ-base and GAF-base.
 * Update version in `Cargo.toml`.
 * Switch to crates.io versions of dependencies, if necessary.
 * Update `RELEASES.md`.
-* Run `cargo clippy --features=benchmark`.
+* Run `cargo clippy --features benchmark`.
 * Run tests with `cargo test`.
 * Build documentation with `cargo doc`.
-* Build the optimized version with `cargo build --release --features=benchmark`.
+* Build the optimized version with `cargo build --release --features benchmark`.
 * Commit the final changes for the release.
 * Publish in crates.io with `cargo publish`.
 * Push to GitHub.

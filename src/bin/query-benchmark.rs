@@ -250,7 +250,7 @@ fn generate_queries(config: &Config) -> Result<Vec<SubgraphQuery>, String> {
         let query = SubgraphQuery::path_interval(&path_name, offset..(offset + config.interval_length))
             .with_context(config.context_length)
             .with_snarls(config.snarl_output)
-            .with_output(HaplotypeOutput::Distinct);
+            .with_haplotypes(HaplotypeOutput::Distinct);
         queries.push(query);
     }
 
