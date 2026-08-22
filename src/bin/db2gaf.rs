@@ -4,13 +4,11 @@ use std::sync::mpsc;
 use std::time::Instant;
 use std::{env, io, process, thread};
 
-use gbz::GBZ;
+use gbz::{GBZ, GraphName};
 
 use gbz_base::{GAFBase, ReadSet};
 use gbz_base::{formats, utils};
 use gbz_base::{Error, Result};
-
-use pggname::GraphName;
 
 use simple_sds::serialize;
 

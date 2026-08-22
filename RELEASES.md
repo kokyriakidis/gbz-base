@@ -1,5 +1,9 @@
 # GBZ-base releases
 
+## Current version
+
+* Support for GBZ version 3 and GBWT version 6 with Zstandard compressed BWT.
+
 ## GBZ-base 0.6.0 (2026-08-11)
 
 * Database versions: GBZ-base version 4, GAF-base version 4

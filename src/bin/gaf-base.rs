@@ -13,9 +13,7 @@ use gbz_base::{db, formats, utils};
 use gbz_base::ReadSet;
 use gbz_base::{Error, Result};
 
-use gbz::GBZ;
-
-use pggname::GraphName;
+use gbz::{GBZ, GraphName};
 
 use simple_sds::{binaries, serialize};
 

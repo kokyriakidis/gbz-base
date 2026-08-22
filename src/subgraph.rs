@@ -23,11 +23,11 @@ use std::ops::Range;
 use std::cmp;
 
 use gbz::ENDMARKER;
-use gbz::{GBZ, GraphPosition, Orientation, NodeSide, Pos, FullPathName};
+use gbz::{GBZ, GraphName, GraphPosition, Orientation, NodeSide, Pos, FullPathName};
 use gbz::support::Chains;
 use gbz::{algorithms, support};
 
-use pggname::{Graph, GraphName};
+use pggname::Graph;
 use pggname::graph::NodeInt;
 
 #[cfg(test)]

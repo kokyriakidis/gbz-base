@@ -10,8 +10,7 @@ use std::io::{self, BufRead, BufReader};
 
 use flate2::read::MultiGzDecoder;
 
-use gbz::{GBWT, Pos, ENDMARKER};
-use pggname::GraphName;
+use gbz::{GBWT, GraphName, Pos, ENDMARKER};
 use simple_sds::binaries;
 
 //-----------------------------------------------------------------------------

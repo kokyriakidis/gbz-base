@@ -12,12 +12,10 @@ use std::{fs, thread};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
-use gbz::{FullPathName, GBWT, GBWTBuilder, GBZ, Orientation, Pos};
+use gbz::{FullPathName, GBWT, GBWTBuilder, GBZ, GraphName, Orientation, Pos};
 use gbz::algorithms;
 use gbz::bwt::{BWT, Record};
 use gbz::support::{self, Tags, Chains};
-
-use pggname::GraphName;
 
 use simple_sds::{binaries, serialize};
 
