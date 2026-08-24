@@ -1,6 +1,6 @@
 # GBZ-base releases
 
-## Current version
+## GBZ-base 0.6.1 (2026-08-24)
 
 * Support for GBZ version 3 and GBWT version 6 with Zstandard compressed BWT.
 
